@@ -1,168 +1,259 @@
 # 📄 RAG Document Chatbot
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-App-red.svg)
-![LLM](https://img.shields.io/badge/LLM-Groq%2FOpenAI-purple.svg)
-![Vector Search](https://img.shields.io/badge/VectorSearch-Numpy%20Cosine-green.svg)
+![Python](https://img.shields.io/badge/Python-3.11-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-Deployed-red.svg)
+![LLM](https://img.shields.io/badge/LLM-Groq%20%7C%20OpenAI-purple.svg)
+![RAG](https://img.shields.io/badge/AI-RAG%20Pipeline-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)
 
 ---
 
-## 🚀 Overview
+# 🚀 Live Demo
 
-The **RAG Document Chatbot** is an end-to-end AI system that allows users to upload PDF documents and ask natural language questions about their content.
+## 🌐 Deployed Application
 
-It implements a **Retrieval-Augmented Generation (RAG)** pipeline that ensures all responses are grounded in the provided documents, combining semantic search with large language models.
-
-Unlike simple chatbots, this system **retrieves relevant knowledge before generating answers**, making responses more accurate, explainable, and context-aware.
-
----
-
-## 🧠 Key Features
-
-* 📄 Upload and process PDF documents
-* ✂️ Intelligent text chunking with overlap
-* 🧠 Sentence-transformer embeddings
-* 🔍 Semantic search using cosine similarity
-* 🗂️ Custom in-memory vector store
-* 🤖 LLM-powered answer generation (Groq / OpenAI / Mock)
-* 📚 Source-aware responses
-* 💬 Interactive Streamlit chat interface
-* 🧩 Fully modular and extensible architecture
+👉 **Live App:**  
+https://jay-rag-chatbot.streamlit.app/
 
 ---
 
-## 🏗️ System Architecture
+## 🎥 Video Demonstration
+
+https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4
+
+---
+
+# 📌 Overview
+
+The **RAG Document Chatbot** is a full-stack AI application that enables users to upload PDF documents and ask natural language questions grounded in the uploaded content.
+
+The system implements a **Retrieval-Augmented Generation (RAG)** pipeline that combines:
+
+- semantic retrieval
+- vector similarity search
+- contextual document grounding
+- LLM-powered response generation
+
+Unlike traditional chatbots that rely purely on prompting, this system retrieves relevant document context before generating responses, significantly improving factual accuracy and explainability.
+
+---
+
+# 🧠 Key Features
+
+- 📄 PDF upload and parsing
+- ✂️ Intelligent overlapping text chunking
+- 🧠 Sentence-transformer embeddings
+- 🔍 Semantic retrieval using cosine similarity
+- 🗂️ Custom vector store architecture
+- 🤖 Groq/OpenAI LLM integration
+- 📚 Source-grounded responses
+- 💬 Interactive Streamlit chat interface
+- ⚡ Real-time document ingestion
+- 🧩 Modular production-style architecture
+
+---
+
+# 📸 Application Screenshots
+
+---
+
+## 🏠 Homepage / Empty State
+
+Demonstrates:
+- clean UI
+- sidebar controls
+- upload workflow
+- configurable retrieval settings
+
+![Homepage](assets/screenshots/Doc_rag_chatbot_Homepage.PNG)
+
+---
+
+## 📄 Document Upload & Processing
+
+Demonstrates:
+- PDF ingestion
+- real-time processing
+- document management workflow
+
+![Document Upload](assets/screenshots/Doc_rag_chatbot_Document.PNG)
+
+---
+
+## 💬 Question & Answer Interaction
+
+Demonstrates:
+- grounded response generation
+- contextual answering
+- semantic retrieval in action
+
+![QnA](assets/screenshots/Doc_rag_chatbotQnA.PNG)
+
+---
+
+## 📚 Retrieval & Context Display
+
+Demonstrates:
+- retrieved chunks
+- source-aware answering
+- explainable RAG pipeline behavior
+
+![Retrieval](assets/screenshots/Doc_rag_chatbot_Retrival.PNG)
+
+---
+
+# 🏗️ System Architecture
 
 ```text
 User Query
     ↓
-Streamlit UI (app.py)
+Streamlit Frontend (app.py)
     ↓
-RAG Pipeline (rag_pipeline.py)
+RAG Pipeline Orchestrator
     ↓
-Retriever (Task 6)
+Semantic Retriever
     ↓
-Vector Store (NumPy Cosine Similarity)
+Vector Similarity Search
     ↓
 Top-K Relevant Chunks
     ↓
-LLM Generator (Groq / OpenAI / Mock)
+LLM Generator (Groq/OpenAI)
     ↓
-Final Answer
-    ↓
-User Response
+Grounded Final Response
 ```
 
 ---
 
-## ⚙️ How It Works
+# ⚙️ How the RAG Pipeline Works
 
-### 1. Document Upload
+## 1️⃣ Document Upload
 
-Users upload PDF files through the Streamlit interface.
-
-### 2. Text Extraction
-
-PDFs are parsed into raw text using a lightweight loader.
-
-### 3. Chunking
-
-Text is split into overlapping semantic chunks for better retrieval accuracy.
-
-### 4. Embedding Generation
-
-Each chunk is converted into dense vector representations using Sentence Transformers.
-
-### 5. Vector Storage
-
-Embeddings are stored in a custom in-memory vector store.
-
-### 6. Query Processing
-
-User questions are embedded into the same vector space.
-
-### 7. Retrieval
-
-Top-K most relevant chunks are retrieved using cosine similarity search.
-
-### 8. Answer Generation
-
-A Large Language Model generates a final answer using retrieved context.
+Users upload PDF documents through the Streamlit interface.
 
 ---
 
-## 🧰 Tech Stack
+## 2️⃣ PDF Text Extraction
 
-* **Frontend:** Streamlit
-* **Backend:** Python
-* **Embeddings:** Sentence Transformers (MiniLM / MPNet)
-* **Vector Store:** Custom NumPy-based cosine similarity engine
-* **LLM Providers:** Groq / OpenAI / Mock mode (testing)
-* **PDF Processing:** PyPDF
+The system extracts raw text from PDFs using PyPDF.
 
 ---
 
-## 📁 Project Structure
+## 3️⃣ Intelligent Chunking
+
+Documents are split into overlapping semantic chunks to preserve contextual continuity during retrieval.
+
+---
+
+## 4️⃣ Embedding Generation
+
+Chunks are transformed into dense vector embeddings using Sentence Transformers.
+
+---
+
+## 5️⃣ Vector Storage
+
+Embeddings are stored inside a custom vector similarity engine.
+
+---
+
+## 6️⃣ Query Embedding
+
+User questions are embedded into the same semantic vector space.
+
+---
+
+## 7️⃣ Semantic Retrieval
+
+Top-K relevant chunks are retrieved using cosine similarity search.
+
+---
+
+## 8️⃣ LLM Answer Generation
+
+Retrieved context is injected into the prompt sent to the LLM to generate grounded answers.
+
+---
+
+# 🧰 Tech Stack
+
+| Component | Technology |
+|---|---|
+| Frontend | Streamlit |
+| Backend | Python |
+| Embeddings | Sentence Transformers |
+| Vector Search | NumPy Cosine Similarity |
+| LLM Providers | Groq / OpenAI |
+| PDF Parsing | PyPDF |
+| Deployment | Streamlit Cloud |
+
+---
+
+# 📁 Project Structure
 
 ```text
 rag-document-chatbot/
 │
-├── app.py                  # Streamlit UI (Task 8)
-├── rag_pipeline.py         # Full system orchestration
-├── config.py
+├── app.py
+├── rag_pipeline.py
+├── requirements.txt
+├── runtime.txt
+├── README.md
 │
 ├── core/
-│   ├── pdf_loader.py       # PDF text extraction
-│   ├── chunker.py          # Text splitting logic
-│   ├── vector_store.py     # In-memory vector database
+│   ├── pdf_loader.py
+│   ├── chunker.py
+│   └── vector_store.py
 │
 ├── services/
-│   ├── embeddings.py       # Embedding models
-│   ├── retriever.py        # Semantic search (Task 6)
-│   ├── generator.py        # LLM interface (Task 7)
+│   ├── embeddings.py
+│   ├── retriever.py
+│   └── generator.py
 │
-├── tests/                  # Unit tests for all modules
-├── requirements.txt
-└── README.md
+├── assets/
+│   ├── demo/
+│   │   └── rag_doc_chatbot_demo.mp4
+│   │
+│   └── screenshots/
+│       ├── Doc_rag_chatbot_Homepage.PNG
+│       ├── Doc_rag_chatbot_Document.PNG
+│       ├── Doc_rag_chatbotQnA.PNG
+│       └── Doc_rag_chatbot_Retrival.PNG
+│
+└── tests/
 ```
 
 ---
 
-## ⚙️ Installation
+# ⚙️ Installation
 
-### 1. Clone repository
+## 1️⃣ Clone Repository
 
 ```bash
-git clone https://github.com/your-username/rag-document-chatbot.git
-cd rag-document-chatbot
+git clone https://github.com/jaymwangi/document-ai-chatbot.git
+cd document-ai-chatbot
 ```
 
 ---
 
-### 2. Create virtual environment
+## 2️⃣ Create Virtual Environment
+
+### Windows
 
 ```bash
 python -m venv venv
-```
-
-Activate:
-
-**Windows:**
-
-```bash
 venv\Scripts\activate
 ```
 
-**Mac/Linux:**
+### Mac/Linux
 
 ```bash
+python -m venv venv
 source venv/bin/activate
 ```
 
 ---
 
-### 3. Install dependencies
+## 3️⃣ Install Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -170,21 +261,20 @@ pip install -r requirements.txt
 
 ---
 
-## 🔑 Environment Variables
+# 🔑 Environment Variables
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the project root:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-* Groq is recommended for fast and free inference
-* OpenAI is optional alternative
+Groq is recommended for fast inference and lower latency.
 
 ---
 
-## ▶️ Run the Application
+# ▶️ Running the Application
 
 ```bash
 streamlit run app.py
@@ -192,121 +282,93 @@ streamlit run app.py
 
 Then open:
 
-```
+```text
 http://localhost:8501
 ```
 
 ---
 
-## ☁️ Deployment
+# ☁️ Deployment
 
-You can deploy this project using:
+This project is deployed on Streamlit Cloud.
 
-* Streamlit Cloud (recommended)
-* Render
-* AWS EC2
-* HuggingFace Spaces
-
-For Streamlit Cloud:
+## Deployment Steps
 
 1. Push project to GitHub
-2. Connect repository
-3. Add `GROQ_API_KEY` in secrets
-4. Deploy
+2. Connect repository to Streamlit Cloud
+3. Add secrets/environment variables
+4. Deploy application
 
 ---
 
-## 📸 Screenshots
+# 📊 Performance Notes
 
-### 📄 Document Upload Interface
-
-(Add screenshot here)
-
-```
-assets/screenshots/upload.png
-```
-
-### 💬 Question & Answer Interface
-
-(Add screenshot here)
-
-```
-assets/screenshots/chat.png
-```
-
-### 📚 Retrieved Context
-
-(Add screenshot here)
-
-```
-assets/screenshots/context.png
-```
+- Uses lightweight in-memory vector retrieval
+- Fast semantic search for small-to-medium datasets
+- Optimized for educational and portfolio-scale RAG systems
+- Modular architecture enables future FAISS/Chroma upgrades
 
 ---
 
-## 📊 Performance Notes
+# 🔮 Future Improvements
 
-* Uses in-memory vector storage (fast for small-medium datasets)
-* Suitable for up to ~10,000 chunks
-* For larger scale, FAISS or ChromaDB upgrade recommended
-
----
-
-## 🔮 Future Improvements
-
-* ⚡ FAISS-based optimized vector search
-* 🧠 Reranking with cross-encoders
-* 💾 Persistent vector database (ChromaDB)
-* 💬 Chat memory per document
-* 🐳 Docker containerization
-* 🔐 User authentication system
-* 📡 FastAPI backend for production scaling
+- ⚡ FAISS vector indexing
+- 🧠 Cross-encoder reranking
+- 💾 Persistent ChromaDB storage
+- 🧵 Conversational memory
+- 🐳 Docker containerization
+- 🔐 Authentication system
+- 📡 FastAPI backend
+- ☁️ Production cloud deployment architecture
 
 ---
 
-## 🎯 Skills Demonstrated
+# 🎯 Skills Demonstrated
 
-* Retrieval-Augmented Generation (RAG) systems
-* Embedding-based semantic search
-* Vector similarity search (cosine similarity)
-* LLM integration (Groq / OpenAI)
-* Modular Python system design
-* Full-stack AI application development
-* Streamlit UI development
-
----
-
-## 📌 Why This Project Matters
-
-This project demonstrates how modern AI applications are built beyond simple prompting.
-
-It shows how to design a complete system that:
-
-* understands documents
-* retrieves relevant knowledge
-* and generates grounded, accurate answers
-
-This architecture is widely used in:
-
-* AI copilots
-* enterprise search systems
-* legal/document analysis tools
-* knowledge assistants
+- Retrieval-Augmented Generation (RAG)
+- Semantic search systems
+- Embedding pipelines
+- Vector similarity search
+- LLM orchestration
+- AI system architecture
+- Full-stack AI application development
+- Streamlit deployment workflows
+- Environment/debugging management
+- Production dependency resolution
 
 ---
 
-## 📜 License
+# 📌 Why This Project Matters
+
+Modern AI systems increasingly require retrieval-based architectures rather than standalone prompting.
+
+This project demonstrates:
+
+- grounded response generation
+- semantic understanding
+- explainable AI workflows
+- document-aware conversational systems
+
+These concepts power:
+- enterprise copilots
+- legal AI systems
+- internal knowledge assistants
+- research copilots
+- AI search platforms
+
+---
+
+# 📜 License
 
 This project is licensed under the MIT License.
 
 ---
 
-## ⭐ Support
+# ⭐ Support
 
-If you like this project:
+If you found this project useful:
 
-* ⭐ Star the repository
-* 🍴 Fork it
-* 🚀 Improve it further
-
-
+- ⭐ Star the repository
+- 🍴 Fork the project
+- 🚀 Build upon it
+- 📢 Share feedback
