@@ -1,14 +1,14 @@
 pypdf==4.2.0
-
-sentence-transformers==2.3.1
-chromadb==0.5.0
+sentence-transformers==2.2.2
+chromadb==0.4.22
 
 numpy==1.26.4
 
 groq==0.9.0
 openai==1.30.0
 
-streamlit==1.35.0
+streamlit==1.31.0
+
 python-dotenv==1.0.0
 
-pillow==10.4.0
+pillow==10.0.0
