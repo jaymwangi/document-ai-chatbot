@@ -1,5 +1,6 @@
 pypdf==4.2.0
-sentence-transformers==2.2.2
+
+sentence-transformers==2.3.1
 chromadb==0.4.22
 
 numpy==1.26.4
