@@ -1,7 +1,8 @@
-# 📄 RAG Document Chatbot
+# 📄 RAG Document Chatbot (v2 - FAISS Upgrade + Modular RAG Pipeline)
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Deployed-red.svg)
+![FAISS](https://img.shields.io/badge/Vector%20DB-FAISS-orange.svg)
 ![LLM](https://img.shields.io/badge/LLM-Groq%20%7C%20OpenAI-purple.svg)
 ![RAG](https://img.shields.io/badge/AI-RAG%20Pipeline-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)
@@ -12,14 +13,30 @@
 
 ## 🌐 Deployed Application
 
-👉 **Live App:**  
-https://jay-rag-chatbot.streamlit.app/
+👉 **Live App:**
+[https://jay-rag-chatbot.streamlit.app/](https://jay-rag-chatbot.streamlit.app/)
 
 ---
 
 ## 🎥 Video Demonstration
 
-https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4
+[https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4](https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4)
+
+---
+
+# 📌 Project Evolution (IMPORTANT UPDATE)
+
+> ⚠️ This repository has been **significantly upgraded from an earlier version**.
+
+### 🔄 Major Upgrade Includes:
+
+* Migrated from **basic vector similarity (NumPy cosine)** → **FAISS indexing system**
+* Introduced **modular RAG architecture (pipeline/orchestrator design)**
+* Added **retrieval debugging system with metadata visibility**
+* Implemented **performance timing logs across all pipeline stages**
+* Enhanced **retriever with scoring + source tracking**
+* Improved **UI/UX with real-time processing feedback + debug panel**
+* Optimized ingestion pipeline for **large document handling (1000+ chunks)**
 
 ---
 
@@ -29,10 +46,10 @@ The **RAG Document Chatbot** is a full-stack AI application that enables users t
 
 The system implements a **Retrieval-Augmented Generation (RAG)** pipeline that combines:
 
-- semantic retrieval
-- vector similarity search
-- contextual document grounding
-- LLM-powered response generation
+* semantic retrieval
+* FAISS vector similarity search
+* contextual document grounding
+* LLM-powered response generation
 
 Unlike traditional chatbots that rely purely on prompting, this system retrieves relevant document context before generating responses, significantly improving factual accuracy and explainability.
 
@@ -40,16 +57,17 @@ Unlike traditional chatbots that rely purely on prompting, this system retrieves
 
 # 🧠 Key Features
 
-- 📄 PDF upload and parsing
-- ✂️ Intelligent overlapping text chunking
-- 🧠 Sentence-transformer embeddings
-- 🔍 Semantic retrieval using cosine similarity
-- 🗂️ Custom vector store architecture
-- 🤖 Groq/OpenAI LLM integration
-- 📚 Source-grounded responses
-- 💬 Interactive Streamlit chat interface
-- ⚡ Real-time document ingestion
-- 🧩 Modular production-style architecture
+* 📄 PDF upload and parsing
+* ✂️ Intelligent overlapping text chunking
+* 🧠 Sentence-transformer embeddings
+* ⚡ FAISS vector indexing (fast similarity search)
+* 🔍 Semantic retrieval with scoring + metadata
+* 🧾 Retrieval debug panel (inspect chunks + scores)
+* ⏱️ Pipeline timing logs (performance tracing)
+* 🤖 Groq/OpenAI LLM integration
+* 📚 Source-grounded responses
+* 💬 Interactive Streamlit chat interface
+* 🧩 Modular production-style RAG architecture
 
 ---
 
@@ -59,11 +77,10 @@ Unlike traditional chatbots that rely purely on prompting, this system retrieves
 
 ## 🏠 Homepage / Empty State
 
-Demonstrates:
-- clean UI
-- sidebar controls
-- upload workflow
-- configurable retrieval settings
+* clean UI
+* sidebar controls
+* upload workflow
+* configurable retrieval settings
 
 ![Homepage](assets/screenshots/Doc_rag_chatbot_Homepage.PNG)
 
@@ -71,10 +88,9 @@ Demonstrates:
 
 ## 📄 Document Upload & Processing
 
-Demonstrates:
-- PDF ingestion
-- real-time processing
-- document management workflow
+* PDF ingestion
+* real-time processing
+* document management workflow
 
 ![Document Upload](assets/screenshots/Doc_rag_chatbot_Document.PNG)
 
@@ -82,21 +98,20 @@ Demonstrates:
 
 ## 💬 Question & Answer Interaction
 
-Demonstrates:
-- grounded response generation
-- contextual answering
-- semantic retrieval in action
+* grounded response generation
+* contextual answering
+* FAISS-powered retrieval in action
 
 ![QnA](assets/screenshots/Doc_rag_chatbotQnA.PNG)
 
 ---
 
-## 📚 Retrieval & Context Display
+## 📚 Retrieval Debug Panel
 
-Demonstrates:
-- retrieved chunks
-- source-aware answering
-- explainable RAG pipeline behavior
+* retrieved chunks
+* similarity scores
+* source tracking
+* explainable AI workflow visibility
 
 ![Retrieval](assets/screenshots/Doc_rag_chatbot_Retrival.PNG)
 
@@ -109,13 +124,13 @@ User Query
     ↓
 Streamlit Frontend (app.py)
     ↓
-RAG Pipeline Orchestrator
+RAG Orchestrator (pipeline/orchestrator.py)
     ↓
-Semantic Retriever
+Query Embedding (Sentence Transformers)
     ↓
-Vector Similarity Search
+FAISS Vector Search Engine
     ↓
-Top-K Relevant Chunks
+Top-K Relevant Chunks + Scores
     ↓
 LLM Generator (Groq/OpenAI)
     ↓
@@ -130,61 +145,67 @@ Grounded Final Response
 
 Users upload PDF documents through the Streamlit interface.
 
----
-
 ## 2️⃣ PDF Text Extraction
 
-The system extracts raw text from PDFs using PyPDF.
-
----
+Extracted using PyPDF loader.
 
 ## 3️⃣ Intelligent Chunking
 
-Documents are split into overlapping semantic chunks to preserve contextual continuity during retrieval.
-
----
+Overlapping chunks preserve semantic continuity.
 
 ## 4️⃣ Embedding Generation
 
-Chunks are transformed into dense vector embeddings using Sentence Transformers.
+Sentence Transformers convert text → vectors.
 
----
+## 5️⃣ FAISS Indexing
 
-## 5️⃣ Vector Storage
-
-Embeddings are stored inside a custom vector similarity engine.
-
----
+Vectors are stored in FAISS for efficient similarity search.
 
 ## 6️⃣ Query Embedding
 
-User questions are embedded into the same semantic vector space.
-
----
+User query is embedded into same vector space.
 
 ## 7️⃣ Semantic Retrieval
 
-Top-K relevant chunks are retrieved using cosine similarity search.
+FAISS returns top-K most similar chunks with scores.
+
+## 8️⃣ LLM Generation
+
+Retrieved context is passed to Groq/OpenAI for grounded response.
 
 ---
 
-## 8️⃣ LLM Answer Generation
+# ⚙️ Performance Monitoring (NEW)
 
-Retrieved context is injected into the prompt sent to the LLM to generate grounded answers.
+The system now includes full pipeline tracing:
+
+* ⏱️ PDF loading time
+* ⏱️ Chunking time
+* ⏱️ Embedding time
+* ⏱️ FAISS indexing time
+* ⏱️ Retrieval time
+* ⏱️ LLM response time
+
+This enables:
+
+* debugging bottlenecks
+* production monitoring
+* optimization insights
 
 ---
 
 # 🧰 Tech Stack
 
-| Component | Technology |
-|---|---|
-| Frontend | Streamlit |
-| Backend | Python |
-| Embeddings | Sentence Transformers |
-| Vector Search | NumPy Cosine Similarity |
-| LLM Providers | Groq / OpenAI |
-| PDF Parsing | PyPDF |
-| Deployment | Streamlit Cloud |
+| Component     | Technology            |
+| ------------- | --------------------- |
+| Frontend      | Streamlit             |
+| Backend       | Python                |
+| Embeddings    | Sentence Transformers |
+| Vector Search | FAISS                 |
+| LLM Providers | Groq / OpenAI         |
+| PDF Parsing   | PyPDF                 |
+| Architecture  | Modular RAG Pipeline  |
+| Deployment    | Streamlit Cloud       |
 
 ---
 
@@ -202,22 +223,28 @@ rag-document-chatbot/
 ├── core/
 │   ├── pdf_loader.py
 │   ├── chunker.py
-│   └── vector_store.py
+│   ├── vector_store.py
+│   └── faiss_index.py
+│
+├── pipeline/
+│   ├── orchestrator.py
+│   └── cache.py
 │
 ├── services/
 │   ├── embeddings.py
 │   ├── retriever.py
-│   └── generator.py
+│   ├── generator.py
+│   ├── reranker.py
+│   ├── query_guard.py
+│   └── question_generator.py
+│
+├── data/
+│   ├── stores/
+│   └── cache_manifest.json
 │
 ├── assets/
 │   ├── demo/
-│   │   └── rag_doc_chatbot_demo.mp4
-│   │
 │   └── screenshots/
-│       ├── Doc_rag_chatbot_Homepage.PNG
-│       ├── Doc_rag_chatbot_Document.PNG
-│       ├── Doc_rag_chatbotQnA.PNG
-│       └── Doc_rag_chatbot_Retrival.PNG
 │
 └── tests/
 ```
@@ -233,25 +260,13 @@ git clone https://github.com/jaymwangi/document-ai-chatbot.git
 cd document-ai-chatbot
 ```
 
----
-
 ## 2️⃣ Create Virtual Environment
 
-### Windows
-
 ```bash
 python -m venv venv
-venv\Scripts\activate
+venv\Scripts\activate   # Windows
+source venv/bin/activate  # Mac/Linux
 ```
-
-### Mac/Linux
-
-```bash
-python -m venv venv
-source venv/bin/activate
-```
-
----
 
 ## 3️⃣ Install Dependencies
 
@@ -263,26 +278,24 @@ pip install -r requirements.txt
 
 # 🔑 Environment Variables
 
-Create a `.env` file in the project root:
+Create a `.env` file:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Groq is recommended for fast inference and lower latency.
-
 ---
 
-# ▶️ Running the Application
+# ▶️ Run Application
 
 ```bash
 streamlit run app.py
 ```
 
-Then open:
+Open:
 
-```text
+```
 http://localhost:8501
 ```
 
@@ -290,85 +303,81 @@ http://localhost:8501
 
 # ☁️ Deployment
 
-This project is deployed on Streamlit Cloud.
+Deployed on Streamlit Cloud.
 
-## Deployment Steps
+Steps:
 
-1. Push project to GitHub
-2. Connect repository to Streamlit Cloud
-3. Add secrets/environment variables
-4. Deploy application
+1. Push to GitHub
+2. Connect Streamlit Cloud
+3. Add secrets
+4. Deploy
 
 ---
 
 # 📊 Performance Notes
 
-- Uses lightweight in-memory vector retrieval
-- Fast semantic search for small-to-medium datasets
-- Optimized for educational and portfolio-scale RAG systems
-- Modular architecture enables future FAISS/Chroma upgrades
+* FAISS provides fast similarity search (production-grade)
+* Optimized batching for large documents (1000+ chunks)
+* Modular architecture enables scaling to enterprise RAG systems
+* Retrieval debugging improves interpretability
 
 ---
 
 # 🔮 Future Improvements
 
-- ⚡ FAISS vector indexing
-- 🧠 Cross-encoder reranking
-- 💾 Persistent ChromaDB storage
-- 🧵 Conversational memory
-- 🐳 Docker containerization
-- 🔐 Authentication system
-- 📡 FastAPI backend
-- ☁️ Production cloud deployment architecture
+* 🧠 Cross-encoder reranking (improve retrieval precision)
+* 💾 Persistent vector DB (ChromaDB / hybrid storage)
+* 🧵 Conversational memory layer
+* 🐳 Dockerization for production deployment
+* 🔐 Authentication system
+* 📡 FastAPI backend migration
 
 ---
 
 # 🎯 Skills Demonstrated
 
-- Retrieval-Augmented Generation (RAG)
-- Semantic search systems
-- Embedding pipelines
-- Vector similarity search
-- LLM orchestration
-- AI system architecture
-- Full-stack AI application development
-- Streamlit deployment workflows
-- Environment/debugging management
-- Production dependency resolution
+* Retrieval-Augmented Generation (RAG)
+* FAISS vector search systems
+* Embedding pipelines
+* LLM orchestration (Groq/OpenAI)
+* Production-grade Python architecture
+* Modular system design
+* Performance profiling & debugging
+* Streamlit deployment
 
 ---
 
 # 📌 Why This Project Matters
 
-Modern AI systems increasingly require retrieval-based architectures rather than standalone prompting.
+Modern AI systems rely heavily on retrieval-based architectures.
 
 This project demonstrates:
 
-- grounded response generation
-- semantic understanding
-- explainable AI workflows
-- document-aware conversational systems
+* grounded AI responses
+* explainable retrieval pipelines
+* production-ready RAG systems
+* scalable semantic search design
 
-These concepts power:
-- enterprise copilots
-- legal AI systems
-- internal knowledge assistants
-- research copilots
-- AI search platforms
+Used in:
+
+* enterprise copilots
+* legal AI systems
+* research assistants
+* knowledge management systems
 
 ---
 
 # 📜 License
 
-This project is licensed under the MIT License.
+MIT License
 
 ---
 
 # ⭐ Support
 
-If you found this project useful:
+If you found this useful:
 
-- ⭐ Star the repository
-- 🍴 Fork the project
-- 🚀 Build upon it
-- 📢 Share feedback
+* ⭐ Star the repository
+* 🍴 Fork it
+* 🚀 Build on it
+* 📢 Share feedback
