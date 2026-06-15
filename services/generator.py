@@ -1,17 +1,91 @@
 """
-LLM Generator Module - Task 7 of RAG Pipeline (PRODUCTION STABLE)
+LLM Generator Module - Task 7 of RAG Pipeline (PRODUCTION STABLE + HARDENED)
 
 Groq model status (2025):
 - ✅ RECOMMENDED: llama-3.1-8b-instant (fast, stable, great for RAG)
 - ✅ HIGH QUALITY: llama-3.3-70b-versatile (better for complex tasks)
 - ❌ DEPRECATED: llama3-70b-8192
 - ❌ DEPRECATED: mixtral-8x7b-32768
-"""
 
+TASK 1: Improved system prompt with strict behavioral rules
+TASK 7: Prompt hardening with context boundaries and refusal enforcement
+"""
+from dotenv import load_dotenv
+load_dotenv()
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# =========================
+# TASK 1: ENHANCED SYSTEM PROMPT (Global Behavior Rules)
+# =========================
+
+# These are the "laws" that govern the LLM's behavior globally
+# Task 1 makes the model a strict document-grounded assistant
+SYSTEM_PROMPT_TASK_1 = """You are a precise and reliable AI assistant for answering questions based ONLY on the provided context from documents.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔒 STRICT BEHAVIOR RULES (TASK 1 - MUST FOLLOW)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1️⃣ GROUNDING RULE:
+   → ONLY use the provided context to answer questions
+   → Do NOT use your training data or external knowledge
+
+2️⃣ REFUSAL RULE:
+   → If the answer is NOT in the context, say:
+     "I don't have enough information in the document to answer this."
+   → Do NOT guess, infer, or make assumptions
+
+3️⃣ ANTI-HALLUCINATION RULE:
+   → Never invent facts, dates, names, or relationships
+   → If uncertain, say you don't know
+
+4️⃣ CONCISENESS RULE:
+   → Be direct and brief
+   → Avoid unnecessary explanations or commentary
+
+5️⃣ AMBIGUITY RULE:
+   → If the question is unclear, ask for clarification
+   → Do not guess what the user meant
+
+6️⃣ TRACEABILITY RULE:
+   → When possible, indicate which source document provided the information
+   → Format: "According to [source], ..."
+
+7️⃣ SELF-AWARENESS RULE:
+   → Do NOT mention that you are "using context" or "based on the provided documents"
+   → Just answer as if this is your knowledge
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Remember: You are a document QA system, NOT a general chatbot.
+"""
+
+# Task 7: Hardened instruction for individual prompts
+USER_PROMPT_TEMPLATE = """Answer the question using ONLY the provided context.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 CONTEXT (from retrieved documents):
+{context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ QUESTION: {query}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 INSTRUCTIONS (TASK 7 - PROMPT HARDENING):
+- If the answer is NOT in the context above, say "I don't have enough information"
+- Do NOT use any external knowledge
+- Be concise and direct
+- Do NOT mention that you are "using context"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANSWER:"""
 
 
 # =========================
@@ -28,14 +102,21 @@ class LLMConfig:
         model: Model name (provider-specific)
         temperature: Creativity (0 = deterministic, 1 = creative)
         max_tokens: Maximum response length
-        system_prompt: Optional system instruction override
+        system_prompt: Optional system instruction override (Task 1)
     """
     provider: str = "groq"
     # PRODUCTION STABLE: Using recommended model
     model: str = "llama-3.1-8b-instant"  # Fast, stable, great for RAG
     temperature: float = 0.2
     max_tokens: int = 500
-    system_prompt: str = "You are a helpful AI assistant. Answer accurately and concisely."
+    
+    # TASK 1: Enhanced system prompt for strict RAG behavior
+    system_prompt: str = SYSTEM_PROMPT_TASK_1
+    
+    # TASK 7: Enable prompt hardening features
+    enable_context_boundaries: bool = True
+    enable_source_citation: bool = True
+    enable_refusal_behavior: bool = True
     
     def __post_init__(self):
         """Validate configuration."""
@@ -51,7 +132,7 @@ class LLMConfig:
                 "llama-3.3-70b-versatile",   # HIGHER QUALITY
             ]
             if self.model not in stable_models:
-                print(f"⚠️  Model {self.model} is deprecated. Using llama-3.1-8b-instant")
+                logger.warning(f"Model {self.model} may be deprecated. Using llama-3.1-8b-instant")
                 self.model = "llama-3.1-8b-instant"
                 
         elif self.provider == "openai" and self.model == "gpt-4o-mini":
@@ -59,27 +140,50 @@ class LLMConfig:
 
 
 # =========================
-# PROMPT BUILDER
+# TASK 7: PROMPT BUILDER (HARDENED)
 # =========================
 
 class PromptBuilder:
-    """Converts retrieval results into LLM-ready prompts."""
+    """
+    Converts retrieval results into LLM-ready prompts.
+    
+    TASK 7 improvements:
+    - Clear context boundaries (visual separators)
+    - Explicit instruction blocks
+    - Refusal behavior enforcement
+    - Source attribution support
+    """
     
     @staticmethod
-    def build(query: str, context: str) -> str:
-        """Build a simple prompt from query and context string."""
-        if not context or context == "No relevant documents found.":
-            return f"""
-Question: {query}
-
-I don't have enough information to answer this question based on the provided documents.
-
-Please ask about content that is available in the source material.
-"""
+    def build(query: str, context: str, config: Optional[LLMConfig] = None) -> str:
+        """
+        Build a hardened prompt with clear boundaries (TASK 7).
         
-        return f"""Based on the following context, answer the question accurately and concisely.
+        Args:
+            query: User's question
+            context: Formatted context from retriever
+            config: LLMConfig for feature flags
+        
+        Returns:
+            Hardened prompt string with clear instructions
+        """
+        use_boundaries = config.enable_context_boundaries if config else True
+        
+        if not context or context == "No relevant documents found.":
+            return f"""❓ QUESTION: {query}
 
-If the context doesn't contain the answer, say "I don't have enough information to answer that."
+🔍 RESULT: I don't have enough information to answer this question based on the provided documents.
+
+💡 Please ask about content that is available in the source material."""
+        
+        if use_boundaries:
+            # TASK 7: Hardened prompt with clear boundaries
+            return USER_PROMPT_TEMPLATE.format(context=context, query=query)
+        else:
+            # Simpler version (backward compatible)
+            return f"""Answer the question using ONLY the provided context.
+
+If the answer is NOT in the context below, say "I don't have enough information".
 
 CONTEXT:
 {context}
@@ -89,29 +193,51 @@ QUESTION: {query}
 ANSWER:"""
     
     @staticmethod
-    def build_with_sources(query: str, chunks: List[Dict[str, Any]]) -> str:
-        """Build prompt with explicit source attribution."""
+    def build_with_sources(query: str, chunks: List[Dict[str, Any]], config: Optional[LLMConfig] = None) -> str:
+        """
+        Build prompt with explicit source attribution (TASK 7).
+        
+        Args:
+            query: User's question
+            chunks: List of retrieval results with metadata
+            config: LLMConfig for feature flags
+        
+        Returns:
+            Structured prompt with source citations
+        """
         if not chunks:
-            return PromptBuilder.build(query, "")
+            return PromptBuilder.build(query, "", config)
+        
+        use_citation = config.enable_source_citation if config else True
         
         context_blocks = []
         for i, chunk in enumerate(chunks, 1):
             source = chunk.get("metadata", {}).get("source", f"Document {i}")
-            context_blocks.append(f"[Source: {source}]\n{chunk['text']}")
+            
+            if use_citation:
+                # TASK 7: Enhanced source attribution
+                context_blocks.append(f"[SOURCE: {source}]\n{chunk['text']}")
+            else:
+                context_blocks.append(chunk['text'])
         
         context = "\n\n---\n\n".join(context_blocks)
         
-        return f"""Using the provided sources, answer the question below.
+        return f"""Using ONLY the provided sources, answer the question below.
 
-SOURCES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📚 SOURCES (from document retrieval):
 {context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-QUESTION: {query}
+❓ QUESTION: {query}
 
-INSTRUCTIONS:
-1. Answer concisely but completely
-2. Cite sources when possible
-3. If information is missing, say so
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 RULES:
+- Only use information from the sources above
+- If the sources don't contain the answer, say "I don't have enough information"
+- Cite the source when possible (e.g., "According to [source]...")
+- Do not add external knowledge
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ANSWER:"""
     
@@ -120,20 +246,50 @@ ANSWER:"""
         query: str, 
         context: str, 
         system_prompt: Optional[str] = None,
-        chat_history: Optional[List[Dict[str, str]]] = None
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        config: Optional[LLMConfig] = None,
     ) -> List[Dict[str, str]]:
-        """Build message list for chat-style LLM APIs."""
-        default_system = "You are a helpful AI assistant. Use the provided context to answer accurately. If the context lacks information, say so clearly."
+        """
+        Build message list for chat-style LLM APIs (TASK 7).
         
-        system_content = system_prompt or default_system
+        Args:
+            query: User's question
+            context: Formatted context string
+            system_prompt: Optional override for system prompt
+            chat_history: Previous conversation turns
+            config: LLMConfig for feature flags
         
-        user_content = f"""CONTEXT:
+        Returns:
+            List of message dicts for API
+        """
+        # TASK 1: Use enhanced system prompt
+        final_system = system_prompt or SYSTEM_PROMPT_TASK_1
+        
+        # TASK 7: Hardened user message with boundaries
+        use_boundaries = config.enable_context_boundaries if config else True
+        
+        if use_boundaries:
+            user_content = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 CONTEXT:
+{context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ QUESTION: {query}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 INSTRUCTIONS:
+- ONLY use the context above
+- If answer not in context, say "I don't have enough information"
+- Be concise and direct
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+        else:
+            user_content = f"""CONTEXT:
 {context}
 
 QUESTION:
 {query}"""
         
-        messages = [{"role": "system", "content": system_content}]
+        messages = [{"role": "system", "content": final_system}]
         
         if chat_history:
             messages.extend(chat_history)
@@ -204,7 +360,6 @@ class GroqClient(BaseLLMClient):
     
     def generate_chat(self, messages: List[Dict[str, str]]) -> str:
         """Generate from chat messages with automatic fallback to stable models."""
-        # Build list of models to try (current + stable fallbacks)
         models_to_try = [self.config.model]
         for model in self.STABLE_MODELS:
             if model not in models_to_try:
@@ -220,9 +375,8 @@ class GroqClient(BaseLLMClient):
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                 )
-                # If we used a different model, update config
                 if model != self.config.model:
-                    print(f"ℹ️  Using {model} (fallback from {self.config.model})")
+                    logger.info(f"Using {model} (fallback from {self.config.model})")
                     self.config.model = model
                 return response.choices[0].message.content.strip()
                 
@@ -230,12 +384,10 @@ class GroqClient(BaseLLMClient):
                 last_error = e
                 error_msg = str(e)
                 
-                # Handle model deprecation gracefully
                 if "decommissioned" in error_msg or "deprecated" in error_msg:
-                    print(f"⚠️  Model {model} is deprecated, trying next...")
+                    logger.warning(f"Model {model} is deprecated, trying next...")
                     continue
                 else:
-                    # Non-model error (rate limit, auth, etc.) - don't retry
                     return f"[Error calling Groq API: {error_msg}]"
         
         return f"[Error: No working Groq models. Last error: {last_error}]"
@@ -348,10 +500,12 @@ class LLMGenerator:
         if not query or not query.strip():
             return "No question provided."
         
+        # Check for refusal cases
         if not context or context == "No relevant documents found.":
             return "I don't have enough information to answer that question based on the available documents."
         
-        prompt = self.prompt_builder.build(query, context)
+        # TASK 7: Use hardened prompt builder
+        prompt = self.prompt_builder.build(query, context, self.config)
         
         if system_prompt:
             original_system = self.config.system_prompt
@@ -372,12 +526,13 @@ class LLMGenerator:
         if not chunks:
             return "No relevant information found to answer this question."
         
+        # TASK 7: Use hardened prompt with source support
         if include_sources:
-            prompt = self.prompt_builder.build_with_sources(query, chunks)
+            prompt = self.prompt_builder.build_with_sources(query, chunks, self.config)
         else:
             context_parts = [chunk["text"] for chunk in chunks]
             context = "\n\n---\n\n".join(context_parts)
-            prompt = self.prompt_builder.build(query, context)
+            prompt = self.prompt_builder.build(query, context, self.config)
         
         return self.client.generate(prompt)
     
@@ -393,6 +548,7 @@ class LLMGenerator:
             context=context,
             system_prompt=self.config.system_prompt,
             chat_history=chat_history,
+            config=self.config,
         )
         
         return self.client.generate_chat(messages)
@@ -404,6 +560,11 @@ class LLMGenerator:
             "model": self.config.model,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
+            "features": {
+                "context_boundaries": self.config.enable_context_boundaries,
+                "source_citation": self.config.enable_source_citation,
+                "refusal_behavior": self.config.enable_refusal_behavior,
+            }
         }
 
 
@@ -416,22 +577,39 @@ def create_generator(
     model: Optional[str] = None,
     temperature: float = 0.2,
     mock_response: Optional[str] = None,
+    enable_hardened_prompts: bool = True,
 ) -> LLMGenerator:
-    """Quick generator creation helper."""
+    """
+    Quick generator creation helper.
+    
+    Args:
+        provider: "groq", "openai", or "mock"
+        model: Model name (uses provider default if None)
+        temperature: Generation temperature
+        mock_response: Custom mock response (mock provider only)
+        enable_hardened_prompts: Enable TASK 7 prompt hardening
+    
+    Returns:
+        Configured LLMGenerator
+    """
     if provider == "mock":
-        config = LLMConfig(provider="mock", temperature=temperature)
+        config = LLMConfig(
+            provider="mock", 
+            temperature=temperature,
+            enable_context_boundaries=enable_hardened_prompts,
+        )
         client = MockClient(config, mock_response=mock_response)
         return LLMGenerator(config=config, client=client)
     
     config = LLMConfig(
         provider=provider,
         temperature=temperature,
+        enable_context_boundaries=enable_hardened_prompts,
     )
     
     if model:
         config.model = model
     elif provider == "groq":
-        # Use production-stable model
         config.model = "llama-3.1-8b-instant"
     
     return LLMGenerator(config=config)
@@ -443,12 +621,12 @@ def create_generator(
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 LLM Generator - Production Stable Test")
+    print("🤖 LLM Generator - Tasks 1 & 7 Test")
     print("=" * 60)
     
     # Test with mock
-    print("\n📝 Test 1: Mock generator")
-    generator = create_generator("mock")
+    print("\n📝 Test 1: Mock generator with hardened prompts")
+    generator = create_generator("mock", enable_hardened_prompts=True)
     
     test_query = "What is RAG?"
     test_context = "RAG stands for Retrieval-Augmented Generation."
@@ -457,15 +635,34 @@ if __name__ == "__main__":
     print(f"\nQuery: {test_query}")
     print(f"Answer: {answer}")
     
-    # Show stable models
-    print("\n📝 Production-Stable Groq Models:")
-    print("   ✅ llama-3.1-8b-instant (RECOMMENDED - fast, stable)")
-    print("   ✅ llama-3.3-70b-versatile (higher quality)")
-    print("\n❌ Deprecated Models (DO NOT USE):")
-    print("   ❌ llama3-70b-8192")
-    print("   ❌ mixtral-8x7b-32768")
+    # Test 2: Refusal behavior (TASK 1)
+    print("\n📝 Test 2: Refusal behavior (TASK 1)")
+    test_query_outside = "What is the capital of France?"
+    test_context_outside = "This document is about RAG systems only."
+    
+    answer_refusal = generator.generate(test_query_outside, test_context_outside)
+    print(f"\nQuery: {test_query_outside}")
+    print(f"Answer: {answer_refusal}")
+    
+    # Test 3: Source attribution (TASK 7)
+    print("\n📝 Test 3: Source attribution (TASK 7)")
+    test_chunks = [
+        {"text": "RAG combines retrieval and generation.", "metadata": {"source": "paper1.pdf"}},
+        {"text": "Vector databases enable semantic search.", "metadata": {"source": "paper2.pdf"}},
+    ]
+    answer_with_sources = generator.generate_from_chunks(test_query, test_chunks, include_sources=True)
+    print(f"\nWith sources:\n{answer_with_sources[:200]}...")
+    
+    # Test 4: Show configuration
+    print("\n📝 Test 4: Generator configuration")
+    info = generator.get_info()
+    print(f"   Provider: {info['provider']}")
+    print(f"   Model: {info['model']}")
+    print(f"   Features: {info['features']}")
     
     print("\n" + "=" * 60)
-    print("✅ Generator module updated with production-stable models!")
-    print("   Default model: llama-3.1-8b-instant")
+    print("✅ Generator module updated with:")
+    print("   - TASK 1: Enhanced system prompt (7 behavioral rules)")
+    print("   - TASK 7: Prompt hardening (boundaries, citations, refusal)")
+    print("   - Production-stable models")
     print("=" * 60)

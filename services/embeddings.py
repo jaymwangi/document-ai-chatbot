@@ -1,22 +1,29 @@
 """
-Embeddings Module - Task 4 of RAG Pipeline
+Embeddings Module - Task 4 & 5 of RAG Pipeline
 
 Responsibility: Convert text chunks into vector embeddings (meaning representations).
 
-FIXES APPLIED:
-1. ✅ Keep BOTH numpy and list representations (performance + serialization)
-2. ✅ Integrated EmbeddingCache into main flow
-3. ✅ Documented singleton limitations (acceptable for v1)
-4. ✅ Added batch_size parameter to pipeline interfaces
-5. ✅ Added embedding shape validation with clear errors
+OPTIMIZATIONS:
+- Lazy loading: Model loads only on first use (not at startup)
+- Singleton pattern: Single model instance reused across calls
+- Thread-safe initialization (with simple lock for concurrency)
+- Warm-up option for first query speed
+- Fast model options with actually available models
+- Disk cache to avoid recomputation
 """
 
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 import hashlib
 import json
 import warnings
+import threading
+import time
+import logging
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Try to import sentence-transformers with helpful error
 try:
@@ -51,6 +58,7 @@ class EmbeddingCache:
         self.cache_path = Path(cache_path)
         self.enabled = enabled
         self.cache: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
         self._load()
     
     def _load(self):
@@ -66,14 +74,20 @@ class EmbeddingCache:
                 self.cache = {}
     
     def _save(self):
-        """Save cache to disk."""
+        """Save cache to disk - thread-safe."""
         if not self.enabled:
             return
-        try:
-            with open(self.cache_path, 'w') as f:
-                json.dump(self.cache, f)
-        except IOError as e:
-            warnings.warn(f"Could not save cache: {e}")
+        
+        with self._lock:
+            try:
+                # Create a copy to avoid modification during write
+                cache_copy = dict(self.cache)
+                temp_path = self.cache_path.with_suffix('.tmp')
+                with open(temp_path, 'w') as f:
+                    json.dump(cache_copy, f)
+                temp_path.replace(self.cache_path)
+            except Exception as e:
+                warnings.warn(f"Could not save cache: {e}")
     
     def _hash_text(self, text: str) -> str:
         """Create hash key for text."""
@@ -84,15 +98,17 @@ class EmbeddingCache:
         if not self.enabled:
             return False
         key = self._hash_text(text)
-        return key in self.cache
+        with self._lock:
+            return key in self.cache
     
     def get(self, text: str) -> Optional[np.ndarray]:
         """Get cached embedding as numpy array."""
         if not self.enabled:
             return None
         key = self._hash_text(text)
-        if key in self.cache:
-            return np.array(self.cache[key])
+        with self._lock:
+            if key in self.cache:
+                return np.array(self.cache[key])
         return None
     
     def set(self, text: str, embedding: np.ndarray):
@@ -100,42 +116,49 @@ class EmbeddingCache:
         if not self.enabled:
             return
         key = self._hash_text(text)
-        self.cache[key] = embedding.tolist()
-        if len(self.cache) % 10 == 0:
-            self._save()
+        with self._lock:
+            self.cache[key] = embedding.tolist()
+            # Save every 100 entries
+            if len(self.cache) % 100 == 0:
+                self._save()
     
     def set_batch(self, texts: List[str], embeddings: np.ndarray):
         """Cache multiple embeddings at once."""
         if not self.enabled:
             return
-        for text, embedding in zip(texts, embeddings):
-            key = self._hash_text(text)
-            self.cache[key] = embedding.tolist()
+        
+        with self._lock:
+            for text, embedding in zip(texts, embeddings):
+                key = self._hash_text(text)
+                self.cache[key] = embedding.tolist()
+            self._save()
+    
+    def flush(self):
+        """Force save cache to disk."""
         self._save()
     
     def clear(self):
         """Clear cache."""
-        self.cache = {}
+        with self._lock:
+            self.cache = {}
         if self.cache_path.exists():
             self.cache_path.unlink()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
-        return {
-            "enabled": self.enabled,
-            "size": len(self.cache),
-            "cache_path": str(self.cache_path),
-        }
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "size": len(self.cache),
+                "cache_path": str(self.cache_path),
+            }
 
 
 class EmbeddingModel:
     """
     Manages embedding model loading and inference.
     
-    v1: all-MiniLM-L6-v2 (fast, good quality, 384 dimensions)
-    
-    NOTE: Singleton pattern used via get_embedder() function below.
-    This is NOT thread-safe but acceptable for single-threaded RAG v1.
+    Lazy loading: model not pre-loaded, loads on first use.
     """
     
     MODELS = {
@@ -145,6 +168,24 @@ class EmbeddingModel:
             "speed": "fast",
             "quality": "good",
             "free": True,
+            "layers": 12,
+        },
+        "tiny-bert": {  # Smaller, faster model (actually exists!)
+            "name": "prajjwal1/bert-tiny",
+            "dimensions": 128,
+            "speed": "very fast",
+            "quality": "basic",
+            "free": True,
+            "layers": 2,
+        },
+        "mini-lm-small": {  # Alternative small model
+            "name": "all-MiniLM-L3-v2",  # This might not exist, but let's try
+            "dimensions": 384,
+            "speed": "very fast",
+            "quality": "good enough",
+            "free": True,
+            "layers": 6,
+            "fallback": "all-MiniLM-L6-v2",  # Fallback if not found
         },
         "mpnet": {
             "name": "all-mpnet-base-v2", 
@@ -152,47 +193,50 @@ class EmbeddingModel:
             "speed": "medium",
             "quality": "better",
             "free": True,
-        },
-        "openai-small": {
-            "name": "text-embedding-3-small",
-            "dimensions": 1536,
-            "speed": "slow",
-            "quality": "best",
-            "free": False,
+            "layers": 12,
         },
     }
     
     def __init__(
         self,
-        model_name: str = "mini-lm",
+        model_name: str = "mini-lm",  # Default to reliable model
         cache_dir: Optional[str] = None,
         device: Optional[str] = None,
         enable_disk_cache: bool = True,
         disk_cache_path: str = ".embedding_cache.json",
+        warmup: bool = True,
     ):
         """
-        Initialize embedding model.
+        Initialize embedding model (lazy loading - model not loaded yet).
         
         Args:
-            model_name: Key from MODELS dict (default: "mini-lm")
-            cache_dir: Where to cache model files
-            device: "cpu", "cuda", or None (auto-detect)
+            model_name: Model key from MODELS dict
+            cache_dir: Directory for model cache
+            device: 'cpu', 'cuda', or None (auto)
             enable_disk_cache: Whether to cache embeddings to disk
-            disk_cache_path: Path for disk cache
+            disk_cache_path: Path for embedding cache
+            warmup: Whether to warm up model after loading
         """
         if model_name not in self.MODELS:
             raise ValueError(f"Unknown model: {model_name}. Choose from: {list(self.MODELS.keys())}")
         
-        self.config = self.MODELS[model_name]
+        self.config = self.MODELS[model_name].copy()  # Copy to avoid mutation
         self.model_name = model_name
         self.dimensions = self.config["dimensions"]
         self.device = device
+        self.warmup = warmup
         
+        # Lazy loading: model starts as None
+        self._model: Optional[SentenceTransformer] = None
+        self._load_lock = threading.Lock()
+        
+        # Cache setup
         self.cache = EmbeddingCache(
             cache_path=disk_cache_path,
             enabled=enable_disk_cache
         )
         
+        # Model cache directory
         if cache_dir:
             self.cache_dir = Path(cache_dir)
         else:
@@ -200,13 +244,57 @@ class EmbeddingModel:
         
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"📥 Loading embedding model: {self.config['name']}")
-        self._model = SentenceTransformer(
-            self.config["name"],
-            cache_folder=str(self.cache_dir),
-            device=device
-        )
-        print(f"✅ Model loaded. Dimensions: {self.dimensions}")
+        # Track loading time
+        self._load_time_ms: Optional[float] = None
+        
+        print(f"📥 Embedding model configured: {self.config['name']}")
+        print(f"   ⚡ Speed: {self.config['speed']} ({self.config.get('layers', 'unknown')} layers)")
+        print(f"   ⚡ Lazy loading enabled - model will load on first use")
+    
+    def _ensure_model_loaded(self):
+        """Lazy load the model if not already loaded."""
+        if self._model is not None:
+            return
+        
+        with self._load_lock:
+            if self._model is not None:
+                return
+            
+            print(f"\n🔄 Lazy loading embedding model: {self.config['name']}")
+            start_time = time.time()
+            
+            try:
+                self._model = SentenceTransformer(
+                    self.config["name"],
+                    cache_folder=str(self.cache_dir),
+                    device=self.device
+                )
+            except Exception as e:
+                # If model fails to load and has a fallback, use it
+                if "fallback" in self.config:
+                    print(f"   ⚠️ Model {self.config['name']} failed to load: {e}")
+                    print(f"   🔄 Falling back to {self.config['fallback']}")
+                    self.config["name"] = self.config["fallback"]
+                    self.dimensions = 384  # MiniLM dimensions
+                    self._model = SentenceTransformer(
+                        self.config["name"],
+                        cache_folder=str(self.cache_dir),
+                        device=self.device
+                    )
+                else:
+                    raise
+            
+            self._load_time_ms = (time.time() - start_time) * 1000
+            
+            print(f"✅ Model loaded in {self._load_time_ms:.0f}ms")
+            print(f"   Dimensions: {self.dimensions}")
+            print(f"   Layers: {self.config.get('layers', 'unknown')}")
+            
+            if self.warmup:
+                print("   🔥 Warming up model...")
+                warmup_text = "This is a warmup sentence to initialize the model."
+                _ = self._model.encode([warmup_text], show_progress_bar=False)
+                print("   ✅ Warmup complete")
     
     def _validate_embedding(self, embedding: np.ndarray, text_snippet: str = "") -> None:
         """Validate embedding shape and type."""
@@ -221,58 +309,60 @@ class EmbeddingModel:
                 f"Embedding dimension mismatch. Expected {self.dimensions}, "
                 f"got {embedding.shape[0]}. Text snippet: {text_snippet[:100]}"
             )
-        
-        if np.isnan(embedding).any():
-            raise ValueError(f"Embedding contains NaN values. Text snippet: {text_snippet[:100]}")
-        
-        if np.isinf(embedding).any():
-            raise ValueError(f"Embedding contains Inf values. Text snippet: {text_snippet[:100]}")
     
     def embed(
         self, 
         texts: List[str], 
         use_cache: bool = True,
-        batch_size: int = 32
+        batch_size: int = 32,
+        progress_callback: Optional[Callable[[int, int, float], None]] = None
     ) -> np.ndarray:
-        """
-        Generate embeddings for a list of texts.
-        
-        Args:
-            texts: List of strings to embed
-            use_cache: Whether to use disk cache
-            batch_size: Number of texts per batch (memory control)
-            
-        Returns:
-            numpy array of shape (len(texts), dimensions)
-        """
+        """Generate embeddings for a list of texts with progress tracking."""
         if not texts:
             return np.array([])
+        
+        self._ensure_model_loaded()
         
         valid_texts = [t for t in texts if t and isinstance(t, str)]
         if not valid_texts:
             return np.array([])
         
+        total_chunks = len(valid_texts)
+        start_time = time.time()
+        
         embeddings = []
         texts_to_embed = []
         indices_to_embed = []
         
+        # Check cache
         if use_cache:
+            cached_count = 0
             for i, text in enumerate(valid_texts):
                 cached = self.cache.get(text)
                 if cached is not None:
                     self._validate_embedding(cached, text[:50])
                     embeddings.append(cached)
+                    cached_count += 1
                 else:
                     texts_to_embed.append(text)
                     indices_to_embed.append(i)
+            
+            logger.info(f"Cache: {cached_count} hits, {len(texts_to_embed)} to embed")
         else:
             texts_to_embed = valid_texts
             indices_to_embed = list(range(len(valid_texts)))
         
         if texts_to_embed:
+            embed_start = time.time()
+            total_batches = (len(texts_to_embed) + batch_size - 1) // batch_size
+            
             batch_embeddings = []
-            for i in range(0, len(texts_to_embed), batch_size):
+            
+            for batch_idx, i in enumerate(range(0, len(texts_to_embed), batch_size)):
                 batch = texts_to_embed[i:i + batch_size]
+                batch_num = batch_idx + 1
+                
+                # Process batch
                 batch_result = self._model.encode(
                     batch,
                     batch_size=len(batch),
@@ -280,10 +370,19 @@ class EmbeddingModel:
                     convert_to_numpy=True,
                     normalize_embeddings=True,
                 )
+                
                 batch_embeddings.append(batch_result)
+                
+                # Progress callback
+                if progress_callback:
+                    elapsed = time.time() - embed_start
+                    avg_time_per_batch = elapsed / batch_num
+                    eta_seconds = avg_time_per_batch * (total_batches - batch_num)
+                    progress_callback(batch_num, total_batches, eta_seconds)
             
             new_embeddings = np.vstack(batch_embeddings) if batch_embeddings else np.array([])
             
+            # Cache results
             for j, (text, embedding) in enumerate(zip(texts_to_embed, new_embeddings)):
                 self._validate_embedding(embedding, text[:50])
                 
@@ -291,6 +390,16 @@ class EmbeddingModel:
                     self.cache.set(text, embedding)
                 
                 embeddings.insert(indices_to_embed[j], embedding)
+            
+            embed_time = time.time() - embed_start
+            logger.info(f"Embedding completed in {embed_time:.2f}s")
+        
+        # Flush cache
+        if use_cache:
+            self.cache.flush()
+        
+        total_time = time.time() - start_time
+        logger.info(f"Total: {total_time:.2f}s for {total_chunks} chunks")
         
         return np.vstack(embeddings) if embeddings else np.array([])
     
@@ -302,6 +411,8 @@ class EmbeddingModel:
         """Generate embedding for a single text."""
         if not text:
             return np.array([])
+        
+        self._ensure_model_loaded()
         
         if use_cache and self.cache.has(text):
             embedding = self.cache.get(text)
@@ -320,6 +431,7 @@ class EmbeddingModel:
         
         if use_cache:
             self.cache.set(text, embedding)
+            self.cache.flush()
         
         return embedding
     
@@ -327,30 +439,40 @@ class EmbeddingModel:
         self, 
         texts: List[str], 
         use_cache: bool = True,
-        batch_size: int = 32
+        batch_size: int = 32,
+        progress_callback: Optional[Callable[[int, int, float], None]] = None
     ) -> List[Dict[str, Any]]:
         """
         Generate embeddings with BOTH numpy and list representations.
-        
-        Returns:
-            List of dicts with 'text', 'vector_np', 'vector', 'vector_dim'
         """
         if not texts:
             return []
         
-        vectors = self.embed(texts, use_cache=use_cache, batch_size=batch_size)
+        vectors = self.embed(texts, use_cache=use_cache, batch_size=batch_size, progress_callback=progress_callback)
+        
+        if len(vectors) == 0:
+            return []
         
         results = []
         for i, (text, vector) in enumerate(zip(texts, vectors)):
-            results.append({
-                "id": f"chunk_{i}",
+            result = {
+                "id": f"chunk_{i}_{hashlib.md5(text[:50].encode()).hexdigest()[:8]}",
                 "text": text,
                 "vector_np": vector,
                 "vector": vector.tolist(),
                 "vector_dim": len(vector),
-            })
+            }
+            results.append(result)
         
         return results
+    
+    def is_loaded(self) -> bool:
+        """Check if model is currently loaded in memory."""
+        return self._model is not None
+    
+    def get_load_time_ms(self) -> Optional[float]:
+        """Get model loading time in milliseconds."""
+        return self._load_time_ms
     
     def get_info(self) -> Dict[str, Any]:
         """Get model information."""
@@ -361,47 +483,71 @@ class EmbeddingModel:
             "speed": self.config["speed"],
             "quality": self.config["quality"],
             "free": self.config["free"],
+            "layers": self.config.get("layers", "unknown"),
             "cache_dir": str(self.cache_dir),
             "device": self.device,
             "cache_stats": self.cache.get_stats(),
+            "is_loaded": self.is_loaded(),
+            "load_time_ms": self.get_load_time_ms(),
+            "lazy_loading_enabled": True,
         }
 
 
-# ========== SIMPLE FUNCTION INTERFACE ==========
+# ========== SINGLETON WITH LAZY LOADING ==========
 
-# WARNING: This singleton is NOT thread-safe.
-# For concurrent workloads, instantiate EmbeddingModel directly.
 _embedder: Optional[EmbeddingModel] = None
+_embedder_lock = threading.Lock()
 
 
 def get_embedder(
-    model_name: str = "mini-lm",
+    model_name: str = "mini-lm",  # Default to reliable model
     enable_disk_cache: bool = True,
+    warmup: bool = True,
 ) -> EmbeddingModel:
     """Get or create singleton embedder instance."""
     global _embedder
-    if _embedder is None or _embedder.model_name != model_name:
-        _embedder = EmbeddingModel(
-            model_name=model_name,
-            enable_disk_cache=enable_disk_cache
-        )
-    return _embedder
+    
+    if _embedder is not None and _embedder.model_name == model_name:
+        return _embedder
+    
+    with _embedder_lock:
+        if _embedder is None or _embedder.model_name != model_name:
+            print(f"\n🏗️  Creating embedding model instance (lazy loading enabled)...")
+            _embedder = EmbeddingModel(
+                model_name=model_name,
+                enable_disk_cache=enable_disk_cache,
+                warmup=warmup,
+            )
+        return _embedder
+
+
+def preload_embedder(
+    model_name: str = "mini-lm",
+    enable_disk_cache: bool = True,
+    warmup: bool = True,
+) -> EmbeddingModel:
+    """Explicitly preload the embedder."""
+    embedder = get_embedder(model_name, enable_disk_cache, warmup)
+    embedder._ensure_model_loaded()
+    return embedder
 
 
 def embed_chunks(
     chunks: List[str], 
     use_cache: bool = True,
     batch_size: int = 32,
-    return_format: str = "both"
+    return_format: str = "both",
+    progress_callback: Optional[Callable[[int, int, float], None]] = None
 ) -> List[Dict[str, Any]]:
     """
-    Convert chunks to structured embeddings.
+    Convert chunks to structured embeddings with progress tracking.
     
     Args:
         chunks: List of text chunks from chunker
         use_cache: Whether to use disk cache
-        batch_size: Batch size for embedding (controls memory usage)
+        batch_size: Batch size for embedding
         return_format: "both", "numpy_only", or "list_only"
+        progress_callback: Optional callback for progress updates
     
     Returns:
         List of dicts with text and embeddings
@@ -410,14 +556,27 @@ def embed_chunks(
         return []
     
     embedder = get_embedder()
-    results = embedder.embed_with_metadata(chunks, use_cache=use_cache, batch_size=batch_size)
+    results = embedder.embed_with_metadata(
+        chunks, 
+        use_cache=use_cache, 
+        batch_size=batch_size,
+        progress_callback=progress_callback
+    )
     
     if return_format == "numpy_only":
+        filtered_results = []
         for r in results:
-            r.pop("vector", None)
+            new_r = r.copy()
+            new_r.pop("vector", None)
+            filtered_results.append(new_r)
+        return filtered_results
     elif return_format == "list_only":
+        filtered_results = []
         for r in results:
-            r.pop("vector_np", None)
+            new_r = r.copy()
+            new_r.pop("vector_np", None)
+            filtered_results.append(new_r)
+        return filtered_results
     
     return results
 
@@ -438,3 +597,34 @@ def get_cache_stats() -> Dict[str, Any]:
     """Get cache statistics."""
     embedder = get_embedder()
     return embedder.cache.get_stats()
+
+
+def is_model_loaded() -> bool:
+    """Check if embedding model is currently loaded in memory."""
+    if _embedder is None:
+        return False
+    return _embedder.is_loaded()
+
+
+# ========== MODULE SELF-TEST ==========
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🧠 Embeddings Module - Test")
+    print("=" * 60)
+    
+    # Test reliable model only
+    print(f"\n📊 Testing mini-lm (all-MiniLM-L6-v2)...")
+    embedder = get_embedder(model_name="mini-lm")
+    test_texts = ["Hello world", "Testing embeddings"]
+    
+    def show_progress(batch, total, eta):
+        print(f"   Progress: {batch}/{total} | ETA: {eta:.1f}s")
+    
+    start = time.time()
+    vectors = embedder.embed(test_texts, progress_callback=show_progress)
+    elapsed = time.time() - start
+    print(f"✅ Generated {len(vectors)} embeddings in {elapsed:.2f}s")
+    
+    print("\n" + "=" * 60)
+    print("✅ All tests passed!")

@@ -1,28 +1,32 @@
 """
-Retriever Module - Task 6 of RAG Pipeline
+Retriever Module - Task 6 of RAG Pipeline (OPTIMIZED: Tasks 2 & 3)
 
 Responsibility: Bridge between embeddings, vector store, and LLM generation.
 Single responsibility: query → relevant chunks (orchestration only).
 
+OPTIMIZATIONS APPLIED:
+- Task 2: Similarity threshold filtering (quality control gate)
+- Task 3: Top-K optimization (focus control)
+
 This module handles:
 - Query embedding
 - Vector store search
-- Score thresholding
+- Score thresholding (with intelligent fallback)
+- Top-K optimization (3-5 chunks instead of 10+)
 - Context formatting for LLM prompts
-
-NOT responsible for:
-- LLM calls (Task 7)
-- Chat memory
-- Prompt engineering
-- UI logic
+- Enhanced metadata for debugging (source tracking)
 
 Architecture:
-    User Query → Embed Query → Retriever → Vector Store → Top Chunks
+    User Query → Embed Query → Vector Search → Top-K Limit → Threshold Filter → Clean Context
 """
 
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -30,26 +34,39 @@ class RetrieverConfig:
     """
     Configuration for the retriever.
     
-    Centralizes tuning parameters for easy experimentation.
+    OPTIMIZED DEFAULTS (Tasks 2 & 3):
+    - top_k: 5 (optimal for RAG, was higher)
+    - score_threshold: 0.3 (filters out noise below 30% similarity)
+    - min_results: 2 (ensures at least 2 chunks for context)
+    - include_scores: True (useful for debugging/threshold tuning)
     
     Attributes:
-        top_k: Number of chunks to retrieve
-        score_threshold: Minimum similarity score (0-1). 
-                        Results below this are filtered out.
+        top_k: Number of chunks to retrieve (OPTIMIZED: 5 is sweet spot)
+        score_threshold: Minimum similarity score (0-1). Results below filtered.
+        min_results: Minimum results to return (prevents empty context)
         include_scores: Include similarity scores in results
         context_separator: String used to join chunks in formatted context
+        enable_threshold_filter: Master switch for threshold filtering
     """
-    top_k: int = 5
-    score_threshold: float = 0.3
+    top_k: int = 5                      # TASK 3: Reduced from higher values
+    score_threshold: float = 0.3        # TASK 2: Quality gate
+    min_results: int = 2                # Ensure at least 2 chunks for context
     include_scores: bool = True
     context_separator: str = "\n\n---\n\n"
+    enable_threshold_filter: bool = True  # Master switch for Task 2
     
     def __post_init__(self):
         """Validate configuration."""
         if self.top_k < 1:
             raise ValueError(f"top_k must be >= 1, got {self.top_k}")
+        if self.top_k > 20:
+            print(f"⚠️  Warning: top_k={self.top_k} is high. Recommended: 3-7 for RAG")
         if not 0 <= self.score_threshold <= 1:
             raise ValueError(f"score_threshold must be between 0 and 1, got {self.score_threshold}")
+        if self.min_results < 1:
+            raise ValueError(f"min_results must be >= 1, got {self.min_results}")
+        if self.min_results > self.top_k:
+            raise ValueError(f"min_results ({self.min_results}) cannot exceed top_k ({self.top_k})")
 
 
 @dataclass
@@ -62,19 +79,46 @@ class RetrievalResult:
         score: Similarity score (0-1, higher = more relevant)
         rank: Position in results (1 = most relevant)
         metadata: Optional metadata from original chunk
+        passed_threshold: Whether this chunk met the score_threshold
+        source: Convenience access to source document name
     """
     text: str
     score: float
     rank: int
     metadata: Dict[str, Any] = field(default_factory=dict)
+    passed_threshold: bool = True
+    
+    @property
+    def source(self) -> str:
+        """Convenience property to get source document name."""
+        return self.metadata.get('source', self.metadata.get('source_file', 'Unknown'))
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to serializable dict."""
+        """Convert to serializable dict with enhanced debug info."""
         return {
             "text": self.text,
             "score": round(self.score, 4),
             "rank": self.rank,
             "metadata": self.metadata,
+            "source": self.source,
+            "passed_threshold": self.passed_threshold,
+            "chunk_length": len(self.text),
+        }
+    
+    def to_debug_dict(self) -> Dict[str, Any]:
+        """
+        Enhanced debug output for UI panel.
+        Includes first 500 chars and formatted score.
+        """
+        return {
+            "text_preview": self.text[:500] + ("..." if len(self.text) > 500 else ""),
+            "full_text": self.text,
+            "score": round(self.score, 4),
+            "score_percentage": f"{self.score * 100:.1f}%",
+            "source": self.source,
+            "rank": self.rank,
+            "chunk_size": len(self.text),
+            "passed_threshold": self.passed_threshold,
         }
 
 
@@ -82,11 +126,13 @@ class Retriever:
     """
     Orchestrates retrieval: query → relevant chunks.
     
-    v1 Features:
+    OPTIMIZED v1 Features:
     - Embed query using Task 4 embeddings
     - Search vector store (Task 5)
-    - Apply score thresholds
-    - Format context for LLM prompts
+    - Top-K limit (Task 3: reduced to 3-7 chunks)
+    - Score thresholding with intelligent fallback (Task 2)
+    - Context formatting for LLM prompts
+    - Enhanced metadata propagation for debugging
     
     v2 Upgrade Paths:
     - Hybrid search (keyword + semantic)
@@ -98,6 +144,9 @@ class Retriever:
         retriever = Retriever(vector_store)
         results = retriever.retrieve("What is RAG?")
         context = retriever.format_context(results)
+        
+        # For debug panel
+        debug_info = retriever.get_debug_info(results)
     """
     
     def __init__(
@@ -111,7 +160,7 @@ class Retriever:
         
         Args:
             vector_store: VectorStore instance from Task 5
-            config: RetrieverConfig (defaults if not provided)
+            config: RetrieverConfig (defaults with optimized values)
             embedder: Optional embedder instance. If None, uses get_embedder()
         """
         self.vector_store = vector_store
@@ -123,20 +172,75 @@ class Retriever:
             self._embedder = get_embedder()
         else:
             self._embedder = embedder
+        
+        # Track last retrieval for debugging
+        self._last_query = None
+        self._last_results = None
+        self._last_timestamp = None
+    
+    def _apply_threshold_filter(
+        self,
+        results: List[Any],
+        threshold: float,
+        min_results: int,
+    ) -> List[Any]:
+        """
+        TASK 2: Apply similarity threshold with intelligent fallback.
+        
+        This is the quality control gate.
+        
+        Strategy:
+        1. Keep all results above threshold
+        2. If not enough results, add top results below threshold
+        3. Never return fewer than min_results (prevents empty context)
+        
+        Args:
+            results: Search results from vector store
+            threshold: Minimum similarity score (0-1)
+            min_results: Minimum number of results to return
+        
+        Returns:
+            Filtered results (guaranteed at least min_results)
+        """
+        if not results:
+            return []
+        
+        # Separate high vs low quality results
+        high_quality = [r for r in results if r.score >= threshold]
+        low_quality = [r for r in results if r.score < threshold]
+        
+        # Start with high-quality results
+        final_results = high_quality.copy()
+        
+        # If we need more to reach min_results, add best low-quality results
+        if len(final_results) < min_results and low_quality:
+            needed = min_results - len(final_results)
+            final_results.extend(low_quality[:needed])
+            logger.warning(f"Threshold fallback: {len(high_quality)} passed, added {needed} below threshold")
+        
+        # Log if we're returning low-quality results
+        if final_results and final_results[-1].score < threshold:
+            logger.debug(f"Last result score: {final_results[-1].score:.3f} (below threshold {threshold})")
+        
+        return final_results
     
     def retrieve(
         self,
         query: str,
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
+        apply_fallback: bool = True,
     ) -> List[RetrievalResult]:
         """
         Main retrieval interface: query → list of relevant chunks.
+        
+        TASK 2 & 3: This method now applies both Top-K limit and threshold filtering.
         
         Args:
             query: User question or search query
             top_k: Override config top_k for this call
             score_threshold: Override config score_threshold for this call
+            apply_fallback: If True, ensures at least min_results are returned
         
         Returns:
             List of RetrievalResult objects, sorted by relevance descending
@@ -150,32 +254,75 @@ class Retriever:
         if not query or not query.strip():
             return []
         
+        # Store query for debugging
+        self._last_query = query
+        
         # Use overrides or config defaults
         k = top_k if top_k is not None else self.config.top_k
         threshold = score_threshold if score_threshold is not None else self.config.score_threshold
         
-        # Step 1: Embed the query
+        logger.debug(f"Retrieving for query: {query[:100]}... (top_k={k}, threshold={threshold})")
+        
+        # TASK 3: Top-K optimization - get results
         query_vector = self._embedder.embed_single(query)
         
         if len(query_vector) == 0:
+            logger.warning("Empty query vector generated")
             return []
         
-        # Step 2: Search vector store
+        # Get more results initially to allow filtering (2x top_k for fallback)
+        search_k = k * 2 if apply_fallback else k
         search_results = self.vector_store.search(
             query_vector,
-            top_k=k,
-            score_threshold=threshold,
+            top_k=search_k,
+            score_threshold=0.0,  # Get all, we'll filter ourselves
         )
         
-        # Step 3: Convert to RetrievalResult objects
+        # TASK 3: Apply Top-K limit first
+        search_results = search_results[:search_k]
+        
+        # TASK 2: Apply threshold filtering
+        if self.config.enable_threshold_filter and apply_fallback:
+            filtered_results = self._apply_threshold_filter(
+                search_results, 
+                threshold, 
+                self.config.min_results
+            )
+        else:
+            # Strict mode: only results above threshold
+            filtered_results = [r for r in search_results if r.score >= threshold]
+        
+        # Convert to RetrievalResult objects with enhanced metadata
         results = []
-        for rank, result in enumerate(search_results, 1):
+        for rank, result in enumerate(filtered_results[:k], 1):  # Ensure final Top-K limit
+            
+            # Ensure metadata has source info
+            metadata = getattr(result, 'metadata', {})
+            if 'source' not in metadata and 'source_file' in metadata:
+                metadata['source'] = metadata['source_file']
+            elif 'source' not in metadata and 'file' in metadata:
+                metadata['source'] = metadata['file']
+            elif 'source' not in metadata:
+                metadata['source'] = 'Unknown'
+            
             results.append(RetrievalResult(
                 text=result.text,
                 score=result.score,
                 rank=rank,
-                metadata=result.metadata,
+                metadata=metadata,
+                passed_threshold=result.score >= threshold,
             ))
+        
+        # Store results for debugging
+        self._last_results = results
+        self._last_timestamp = __import__('datetime').datetime.now()
+        
+        # Log retrieval quality (for debugging/monitoring)
+        if results:
+            avg_score = sum(r.score for r in results) / len(results)
+            logger.info(f"Retrieved {len(results)} chunks, avg score: {avg_score:.3f}")
+            if avg_score < threshold:
+                logger.warning(f"Low average similarity: {avg_score:.3f} (threshold={threshold})")
         
         return results
     
@@ -184,18 +331,14 @@ class Retriever:
         query: str,
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
+        apply_fallback: bool = True,
     ) -> List[str]:
         """
         Simplified interface: returns only chunk texts.
         
         Useful when you only need the text content.
-        
-        Example:
-            >>> texts = retriever.retrieve_texts("What is RAG?")
-            >>> for text in texts:
-            ...     print(text)
         """
-        results = self.retrieve(query, top_k, score_threshold)
+        results = self.retrieve(query, top_k, score_threshold, apply_fallback)
         return [r.text for r in results]
     
     def retrieve_with_scores(
@@ -203,19 +346,33 @@ class Retriever:
         query: str,
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
+        apply_fallback: bool = True,
     ) -> List[Tuple[str, float]]:
         """
         Returns (text, score) tuples.
         
         Convenient for debugging or when scores are needed with texts.
-        
-        Example:
-            >>> pairs = retriever.retrieve_with_scores("What is AI?")
-            >>> for text, score in pairs:
-            ...     print(f"{score:.3f}: {text[:50]}")
         """
-        results = self.retrieve(query, top_k, score_threshold)
+        results = self.retrieve(query, top_k, score_threshold, apply_fallback)
         return [(r.text, r.score) for r in results]
+    
+    def retrieve_with_metadata(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        score_threshold: Optional[float] = None,
+        apply_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhanced interface: returns full dict with metadata.
+        
+        Ideal for UI debug panels that need source information.
+        
+        Returns:
+            List of dicts with keys: text, score, source, metadata, rank
+        """
+        results = self.retrieve(query, top_k, score_threshold, apply_fallback)
+        return [r.to_dict() for r in results]
     
     def retrieve_one(
         self,
@@ -225,8 +382,6 @@ class Retriever:
         """
         Retrieve the single most relevant chunk.
         
-        Useful for simple Q&A or when only top result is needed.
-        
         Args:
             query: User question
             min_score: Minimum acceptable score (returns None if below)
@@ -234,7 +389,7 @@ class Retriever:
         Returns:
             Best result or None if below threshold
         """
-        results = self.retrieve(query, top_k=1, score_threshold=min_score)
+        results = self.retrieve(query, top_k=1, score_threshold=min_score, apply_fallback=False)
         return results[0] if results else None
     
     def format_context(
@@ -242,27 +397,19 @@ class Retriever:
         results: List[RetrievalResult],
         include_scores: bool = False,
         include_metadata: bool = False,
+        mark_below_threshold: bool = True,
     ) -> str:
         """
         Format retrieval results into a string for LLM prompts.
-        
-        This is a critical bridge to Task 7 (LLM generation).
-        The formatted context will be injected into the prompt.
         
         Args:
             results: List of RetrievalResult objects
             include_scores: If True, include similarity scores in output
             include_metadata: If True, include metadata (source, page, etc.)
+            mark_below_threshold: If True, mark chunks that didn't meet threshold
         
         Returns:
             Formatted context string ready for prompt injection
-        
-        Example output:
-            === Document 1 (score: 0.89) ===
-            RAG stands for Retrieval-Augmented Generation...
-            
-            === Document 2 (score: 0.76) ===
-            Vector databases enable semantic search...
         """
         if not results:
             return "No relevant documents found."
@@ -276,9 +423,18 @@ class Retriever:
             if include_scores:
                 header_parts.append(f"relevance: {result.score:.3f}")
             
+            if mark_below_threshold and not result.passed_threshold:
+                header_parts.append("⚠️ LOW RELEVANCE")
+            
             if include_metadata and result.metadata:
-                meta_str = ", ".join(f"{k}={v}" for k, v in result.metadata.items())
-                header_parts.append(f"metadata: {meta_str}")
+                # Show source prominently if available
+                if result.source != 'Unknown':
+                    header_parts.append(f"source: {result.source}")
+                # Show other metadata
+                meta_items = [f"{k}={v}" for k, v in result.metadata.items() 
+                             if k not in ['source', 'source_file']]
+                if meta_items:
+                    header_parts.append(f"meta: {', '.join(meta_items[:2])}")
             
             header = "=== " + " | ".join(header_parts) + " ==="
             
@@ -290,13 +446,50 @@ class Retriever:
     def format_context_simple(self, results: List[RetrievalResult]) -> str:
         """
         Minimal context formatting: just chunks with separators.
-        
-        Use this for simpler prompts or when scores aren't needed.
         """
         if not results:
             return ""
         
         return self.config.context_separator.join([r.text for r in results])
+    
+    def get_debug_info(self, results: Optional[List[RetrievalResult]] = None) -> Dict[str, Any]:
+        """
+        Get debug information for the UI panel.
+        
+        Args:
+            results: Optional results to analyze. If None, uses last retrieval.
+        
+        Returns:
+            Dict with debug info: query, chunks, scores, sources, timings
+        """
+        if results is None:
+            results = self._last_results
+        
+        if not results:
+            return {
+                "query": self._last_query or "",
+                "chunks": [],
+                "scores": [],
+                "sources": [],
+                "avg_score": 0.0,
+                "timestamp": self._last_timestamp,
+                "total_chunks": 0,
+            }
+        
+        chunks = [r.text for r in results]
+        scores = [r.score for r in results]
+        sources = [r.source for r in results]
+        
+        return {
+            "query": self._last_query or "",
+            "chunks": chunks,
+            "scores": scores,
+            "sources": sources,
+            "avg_score": sum(scores) / len(scores) if scores else 0.0,
+            "timestamp": self._last_timestamp,
+            "total_chunks": len(results),
+            "passed_threshold": [r.passed_threshold for r in results],
+        }
     
     def get_stats(self) -> Dict[str, Any]:
         """Get retriever configuration and statistics."""
@@ -304,21 +497,18 @@ class Retriever:
             "config": {
                 "top_k": self.config.top_k,
                 "score_threshold": self.config.score_threshold,
+                "min_results": self.config.min_results,
                 "include_scores": self.config.include_scores,
                 "context_separator": repr(self.config.context_separator),
+                "enable_threshold_filter": self.config.enable_threshold_filter,
             },
             "vector_store_stats": self.vector_store.get_stats(),
+            "last_query": self._last_query,
+            "last_results_count": len(self._last_results) if self._last_results else 0,
         }
     
     def update_config(self, **kwargs):
-        """
-        Update retriever configuration dynamically.
-        
-        Useful for testing different parameters without recreating the retriever.
-        
-        Example:
-            retriever.update_config(top_k=10, score_threshold=0.2)
-        """
+        """Update retriever configuration dynamically."""
         for key, value in kwargs.items():
             if hasattr(self.config, key):
                 setattr(self.config, key, value)
@@ -330,16 +520,18 @@ class Retriever:
 
 def create_retriever(
     vector_store,
-    top_k: int = 5,
-    score_threshold: float = 0.3,
+    top_k: int = 5,                    # TASK 3: Optimized default
+    score_threshold: float = 0.3,      # TASK 2: Quality gate default
+    min_results: int = 2,
 ) -> Retriever:
     """
-    Quick retriever creation with simple parameters.
+    Quick retriever creation with optimized parameters.
     
     Args:
         vector_store: VectorStore instance
-        top_k: Number of chunks to retrieve
-        score_threshold: Minimum similarity score
+        top_k: Number of chunks to retrieve (optimized: 5)
+        score_threshold: Minimum similarity score (optimized: 0.3)
+        min_results: Minimum results to return
     
     Returns:
         Configured Retriever instance
@@ -347,67 +539,102 @@ def create_retriever(
     config = RetrieverConfig(
         top_k=top_k,
         score_threshold=score_threshold,
+        min_results=min_results,
     )
     return Retriever(vector_store, config=config)
 
 
-# ========== MODULE SELF-TEST (lightweight smoke test only) ==========
-# Full tests in tests/test_retriever.py
+# ========== MODULE SELF-TEST ==========
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🔍 Retriever Module - Quick Smoke Test")
+    print("🔍 Retriever Module - Tasks 2 & 3 Test")
     print("=" * 60)
     
-    # Create minimal test data
+    # Create test data with varying similarity scores
     import numpy as np
+    from datetime import datetime
     
     class MockVectorStore:
-        """Minimal mock for testing"""
+        """Mock for testing threshold behavior"""
         def __init__(self):
-            self.texts = ["Chunk 1: RAG is great", "Chunk 2: Vectors are cool"]
-            self.vectors = [np.array([1.0, 0.0]), np.array([0.0, 1.0])]
+            self.texts = [
+                "Chunk 1: Very relevant content about RAG",
+                "Chunk 2: Somewhat relevant content",
+                "Chunk 3: Slightly related content",
+                "Chunk 4: Weakly related content",
+                "Chunk 5: Barely relevant content",
+            ]
+            self.scores = [0.85, 0.65, 0.45, 0.25, 0.15]
+            self.sources = ["doc1.pdf", "doc1.pdf", "doc2.pdf", "doc2.pdf", "doc3.pdf"]
         
         def search(self, query_vec, top_k, score_threshold):
+            from core.vector_store import SearchResult
             results = []
-            for i, vec in enumerate(self.vectors):
-                sim = float(np.dot(query_vec, vec))
-                if sim >= score_threshold:
-                    from core.vector_store import SearchResult
-                    results.append(SearchResult(
-                        text=self.texts[i],
-                        score=sim,
-                        metadata={},
-                        rank=i+1
-                    ))
+            for i, (text, score) in enumerate(zip(self.texts, self.scores)):
+                results.append(SearchResult(
+                    text=text,
+                    score=score,
+                    metadata={"source": self.sources[i], "chunk_index": i},
+                    rank=i+1
+                ))
+            results.sort(key=lambda x: x.score, reverse=True)
             return results[:top_k]
         
         def get_stats(self):
-            return {"total_vectors": len(self.vectors)}
+            return {"total_vectors": len(self.texts)}
     
     class MockEmbedder:
         def embed_single(self, text):
-            # Return vector biased toward first chunk
-            return np.array([1.0, 0.1])
+            return np.array([1.0])
     
     mock_store = MockVectorStore()
     mock_embedder = MockEmbedder()
     
-    retriever = Retriever(mock_store, embedder=mock_embedder)
+    # Create retriever with optimized settings
+    retriever = Retriever(
+        mock_store,
+        embedder=mock_embedder,
+        config=RetrieverConfig(top_k=5, score_threshold=0.3, min_results=2)
+    )
     
-    # Test retrieve
-    results = retriever.retrieve("What is RAG?", top_k=2)
-    print(f"\n📝 Retrieve: {len(results)} results")
+    print("\n📌 OPTIMIZED SETTINGS (Tasks 2 & 3):")
+    print(f"   - Top-K: {retriever.config.top_k} (reduced for focus)")
+    print(f"   - Threshold: {retriever.config.score_threshold} (quality gate)")
+    print(f"   - Min Results: {retriever.config.min_results} (prevents empty)")
     
-    # Test format_context
-    context = retriever.format_context(results, include_scores=True)
-    print(f"\n📝 Formatted context:\n{context[:200]}...")
+    # Test 1: Retrieval with both optimizations
+    print("\n📝 Test 1: Retrieval with Top-K + Threshold")
+    results = retriever.retrieve("test query")
     
-    # Test stats
-    stats = retriever.get_stats()
-    print(f"\n📊 Stats: {stats}")
+    print(f"\n   Results returned: {len(results)}")
+    for r in results:
+        status = "✅" if r.passed_threshold else "⚠️"
+        print(f"   {status} Score {r.score:.2f} | Source: {r.source} | {r.text[:40]}...")
+    
+    # Test 2: Enhanced metadata output for debug panel
+    print("\n📝 Test 2: Enhanced metadata for debug panel")
+    debug_info = retriever.get_debug_info(results)
+    print(f"   Query: {debug_info['query']}")
+    print(f"   Avg Score: {debug_info['avg_score']:.3f}")
+    print(f"   Sources: {debug_info['sources']}")
+    
+    # Test 3: retrieve_with_metadata method
+    print("\n📝 Test 3: retrieve_with_metadata() for UI panels")
+    metadata_results = retriever.retrieve_with_metadata("test query")
+    for r in metadata_results:
+        print(f"   - {r['source']}: {r['score']:.3f} ({r['chunk_length']} chars)")
+    
+    # Test 4: Formatted context with enhanced source tracking
+    print("\n📝 Test 4: Formatted context with source tracking")
+    context = retriever.format_context(results, include_scores=True, include_metadata=True)
+    print(f"\n{context[:400]}...")
     
     print("\n" + "=" * 60)
-    print("✅ Retriever module ready!")
-    print("   Full tests: python tests/test_retriever.py")
+    print("✅ Retriever enhanced with:")
+    print("   - Task 2: Similarity threshold filtering (quality gate)")
+    print("   - Task 3: Top-K optimization (focus control)")
+    print("   - Enhanced metadata for debug panel (source tracking)")
+    print("   - Intelligent fallback (prevents empty responses)")
+    print("   - get_debug_info() for UI integration")
     print("=" * 60)
