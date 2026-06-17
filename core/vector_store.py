@@ -1,35 +1,31 @@
 """
-Vector Store Module - Task 5 & 6 of RAG Pipeline
+Vector Store Module - Task 5 of RAG Pipeline
 
-Responsibility: Store embeddings and retrieve semantically similar chunks.
-This is where your RAG becomes a search engine with PERSISTENT MEMORY.
+Responsibility: Store and retrieve vector embeddings.
+Single responsibility: vectors → search → results.
 
 TASK 6 ADDITIONS:
-- Disk persistence (save/load to NPZ format - fast + compact)
-- Document-level storage (store by document ID)
-- Fast reload on restart (skip recomputation)
-- Metadata preservation (source, page, chunk_index)
-- Foundation for FAISS upgrade path
-
-v1 (Current):
-- In-memory storage with linear search O(n)
-- Cosine similarity (dot product on normalized vectors)
-- Disk persistence with NPZ (NumPy format)
-- Perfect for portfolio projects (under 10k chunks)
-
-v2 Upgrade Paths:
-- FAISS (approximate nearest neighbors for speed)
-- ChromaDB (persistent vector database)
-- Hybrid search (keyword + semantic)
+- Version tracking (monotonic counter)
+- get_version() method for hybrid retriever compatibility
+- Staleness detection support
+- Document ID tracking
+- Metadata preservation
+- Persistent memory across operations
 """
 
-import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
+import logging
 from dataclasses import dataclass, field
-import json
 from pathlib import Path
-import hashlib
+import json
 import pickle
+import hashlib
+import time
+import uuid
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,33 +46,41 @@ class SearchResult:
         }
 
 
+@dataclass
+class SearchStats:
+    """Performance statistics for a search operation."""
+    elapsed_ms: float
+    vectors_searched: int
+    candidates_found: int
+    results_returned: int
+
+
 class VectorStore:
     """
-    Simple in-memory vector store with PERSISTENCE (Task 6).
+    Simple in-memory vector store with version tracking.
     
-    TASK 6 FEATURES:
-    - Save to disk (NPZ format for fast loading)
-    - Load from disk (skip recomputation)
-    - Document-level storage
-    - Metadata preservation
-    
-    v1 Design:
-    - Linear search: O(n) complexity
-    - All vectors stored in RAM
-    - Suitable for portfolio projects
+    Features:
+    - Add vectors in batches
+    - Search by cosine similarity
+    - Metadata storage
+    - Version tracking (monotonic counter)
+    - get_version() for hybrid retriever compatibility
+    - Document ID tracking
+    - Disk persistence (NPZ format)
     
     Usage:
         store = VectorStore()
-        store.add_batch(embeddings)
-        store.save_to_disk("my_docs.npz")
+        store.add_batch(items)
+        print(f"Store version: {store.get_version()}")
         
-        # Later...
-        new_store = VectorStore.load_from_disk("my_docs.npz")
+        # Later, check if store has changed
+        version = store.get_version()
+        if hybrid_retriever.is_stale(version):
+            hybrid_retriever.rebuild()
     """
     
-    # File format versions
-    SAVE_FORMAT_VERSION = 1
-    VALID_EXTENSIONS = ['.npz', '.pkl', '.json']
+    # File format version
+    SAVE_FORMAT_VERSION = 2
     
     def __init__(self, normalize_vectors: bool = True, doc_id: Optional[str] = None):
         """
@@ -86,18 +90,46 @@ class VectorStore:
             normalize_vectors: If True, ensures all vectors are unit length.
             doc_id: Optional document ID for this store instance.
         """
-        self.vectors: List[np.ndarray] = []
         self.texts: List[str] = []
         self.metadata: List[Dict[str, Any]] = []
+        self.vectors: List[np.ndarray] = []
         self.ids: List[str] = []
+        
         self._normalize = normalize_vectors
         self._next_id = 0
-        self.doc_id = doc_id or self._generate_doc_id()
+        self._version: int = 0  # Monotonic version counter
+        self._dimension: Optional[int] = None
+        self._doc_id = doc_id
+        self._created_at = datetime.now().isoformat()
+        self._last_modified = self._created_at
+    
+    @property
+    def doc_id(self) -> str:
+        """Get document ID, generating one if not set."""
+        if self._doc_id is None:
+            self._doc_id = self._generate_doc_id()
+        return self._doc_id
+    
+    @doc_id.setter
+    def doc_id(self, value: str):
+        """Set document ID (only if not already set)."""
+        if self._doc_id is not None and self._doc_id != value:
+            raise ValueError(f"Cannot change doc_id from {self._doc_id} to {value}")
+        self._doc_id = value
+    
+    @property
+    def version(self) -> int:
+        """Get current store version (monotonic counter)."""
+        return self._version
+    
+    @property
+    def dimension(self) -> Optional[int]:
+        """Get vector dimension."""
+        return self._dimension
     
     def _generate_doc_id(self) -> str:
         """Generate a unique document ID."""
-        import time
-        return f"doc_{int(time.time())}_{self._next_id}"
+        return f"doc_{uuid.uuid4().hex[:8]}_{int(time.time())}"
     
     def _generate_id(self) -> str:
         """Generate unique ID for each chunk."""
@@ -113,6 +145,61 @@ class VectorStore:
         if norm > 0:
             return vector / norm
         return vector
+    
+    def _validate_vector(self, vector: np.ndarray) -> None:
+        """
+        Validate vector shape and dimension consistency.
+        
+        Raises:
+            ValueError: If vector is invalid or dimension mismatch.
+        """
+        if vector is None:
+            raise ValueError("Cannot add None vector")
+        
+        if not isinstance(vector, np.ndarray):
+            raise ValueError(f"Vector must be numpy array, got {type(vector)}")
+        
+        if len(vector.shape) != 1:
+            raise ValueError(f"Vector must be 1D, got shape {vector.shape}")
+        
+        if vector.size == 0:
+            raise ValueError("Cannot add empty vector")
+        
+        # Check for NaN or Inf
+        if not np.isfinite(vector).all():
+            raise ValueError("Vector contains NaN or Inf values")
+        
+        # Track and validate dimension
+        vector_dim = len(vector)
+        if self._dimension is None:
+            self._dimension = vector_dim
+        elif vector_dim != self._dimension:
+            raise ValueError(
+                f"Vector dimension mismatch: expected {self._dimension}, "
+                f"got {vector_dim}"
+            )
+    
+    def _increment_version(self) -> None:
+        """Increment the version counter on any mutation."""
+        self._version += 1
+        self._last_modified = datetime.now().isoformat()
+    
+    def get_version(self) -> int:
+        """
+        Get the current version of the vector store.
+        
+        This is the primary method for hybrid retriever compatibility.
+        Used to detect when the store has changed and BM25 needs rebuilding.
+        
+        Returns:
+            int: Current version number (monotonic counter)
+        
+        Example:
+            store = VectorStore()
+            store.add_batch(items)
+            version = store.get_version()  # Returns 1
+        """
+        return self._version
     
     def add(
         self,
@@ -133,20 +220,39 @@ class VectorStore:
         Returns:
             ID of the stored vector
         """
-        if vector is None or len(vector) == 0:
-            raise ValueError("Cannot add empty vector")
+        # Validate vector
+        self._validate_vector(vector)
         
-        if len(vector.shape) != 1:
-            raise ValueError(f"Vector must be 1D, got shape {vector.shape}")
-        
+        # Normalize vector
         normalized_vector = self._normalize_vector(vector)
         
+        # Prepare metadata with auto-injected doc_id
+        if metadata is None:
+            metadata = {}
+        else:
+            metadata = dict(metadata)  # Don't mutate original
+        
+        # Auto-inject doc_id if not present
+        if self._doc_id and "doc_id" not in metadata:
+            metadata["doc_id"] = self._doc_id
+        if self._doc_id and "source" not in metadata:
+            metadata["source"] = self._doc_id
+        
+        # Add timestamp if not present
+        if "created_at" not in metadata:
+            metadata["created_at"] = datetime.now().isoformat()
+        
+        # Generate ID
         vid = vector_id or self._generate_id()
         
+        # Store
         self.vectors.append(normalized_vector)
         self.texts.append(text)
-        self.metadata.append(metadata or {})
+        self.metadata.append(metadata)
         self.ids.append(vid)
+        
+        # Increment version
+        self._increment_version()
         
         return vid
     
@@ -165,6 +271,9 @@ class VectorStore:
         Returns:
             List of IDs for stored vectors
         """
+        if not items:
+            return []
+        
         ids = []
         for item in items:
             vid = self.add(
@@ -174,6 +283,7 @@ class VectorStore:
                 vector_id=item.get("id"),
             )
             ids.append(vid)
+        
         return ids
     
     def _cosine_similarity(
@@ -189,6 +299,7 @@ class VectorStore:
         query_vector: np.ndarray,
         top_k: int = 5,
         score_threshold: Optional[float] = None,
+        return_stats: bool = False,
     ) -> List[SearchResult]:
         """
         Retrieve top-K most similar chunks.
@@ -197,12 +308,33 @@ class VectorStore:
             query_vector: Embedded user query (numpy array)
             top_k: Number of results to return
             score_threshold: Minimum similarity score (0-1)
+            return_stats: If True, return SearchStats as second element
         
         Returns:
-            List of SearchResult objects, sorted by score descending
+            List of SearchResult objects, sorted by score descending.
+            If return_stats=True, returns (results, stats)
         """
+        start_time = time.time()
+        
         if len(self.vectors) == 0:
+            elapsed = (time.time() - start_time) * 1000
+            stats = SearchStats(
+                elapsed_ms=elapsed,
+                vectors_searched=0,
+                candidates_found=0,
+                results_returned=0,
+            )
+            if return_stats:
+                return [], stats
             return []
+        
+        # Validate query vector dimension
+        query_dim = len(query_vector)
+        if self._dimension is not None and query_dim != self._dimension:
+            raise ValueError(
+                f"Query dimension mismatch: expected {self._dimension}, "
+                f"got {query_dim}"
+            )
         
         query_norm = self._normalize_vector(query_vector)
         
@@ -232,6 +364,16 @@ class VectorStore:
                 rank=rank + 1,
             ))
         
+        elapsed = (time.time() - start_time) * 1000
+        stats = SearchStats(
+            elapsed_ms=elapsed,
+            vectors_searched=len(self.vectors),
+            candidates_found=len(scores),
+            results_returned=len(results),
+        )
+        
+        if return_stats:
+            return results, stats
         return results
     
     def search_texts(
@@ -272,166 +414,63 @@ class VectorStore:
                 del self.texts[i]
                 del self.metadata[i]
                 del self.ids[i]
+                self._increment_version()
                 return True
         return False
     
+    def delete_by_metadata(self, key: str, value: Any) -> int:
+        """
+        Delete all vectors matching a metadata key/value pair.
+        
+        Returns:
+            Number of vectors deleted
+        """
+        deleted = 0
+        i = 0
+        while i < len(self.metadata):
+            if self.metadata[i].get(key) == value:
+                del self.vectors[i]
+                del self.texts[i]
+                del self.metadata[i]
+                del self.ids[i]
+                deleted += 1
+            else:
+                i += 1
+        
+        if deleted > 0:
+            self._increment_version()
+        
+        return deleted
+    
     def size(self) -> int:
         """Number of stored vectors."""
+        return len(self.vectors)
+    
+    def __len__(self) -> int:
+        """Pythonic way to get size."""
         return len(self.vectors)
     
     def is_empty(self) -> bool:
         """Check if store has any vectors."""
         return len(self.vectors) == 0
     
+    def has_documents(self) -> bool:
+        """Check if store has any documents."""
+        return not self.is_empty()
+    
     def clear(self) -> None:
         """Remove all stored vectors."""
-        self.vectors.clear()
-        self.texts.clear()
-        self.metadata.clear()
-        self.ids.clear()
-        self._next_id = 0
-    
-    # ========== TASK 6: PERSISTENCE METHODS ==========
-    
-    def save_to_disk(self, filepath: str, format: str = "npz") -> None:
-        """
-        Save vector store to disk (TASK 6).
-        
-        Supports multiple formats:
-        - npz: NumPy compressed format (fast, compact, RECOMMENDED)
-        - json: Human-readable (slow, large)
-        - pkl: Pickle format (Python-specific)
-        
-        Args:
-            filepath: Path to save file
-            format: "npz", "json", or "pkl"
-        """
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Prepare data
-        data = {
-            "doc_id": self.doc_id,
-            "version": self.SAVE_FORMAT_VERSION,
-            "texts": self.texts,
-            "metadata": self.metadata,
-            "ids": self.ids,
-            "vectors": [v.tolist() for v in self.vectors] if self.vectors else [],
-            "normalize": self._normalize,
-            "next_id": self._next_id,
-        }
-        
-        if format == "npz":
-            # NPZ format: store vectors as numpy arrays (fastest)
-            np.savez_compressed(
-                path,
-                doc_id=data["doc_id"],
-                version=data["version"],
-                texts=np.array(self.texts, dtype=object),
-                metadata=np.array(self.metadata, dtype=object),
-                ids=np.array(self.ids, dtype=object),
-                vectors=np.array(self.vectors) if self.vectors else np.array([]),
-                normalize=data["normalize"],
-                next_id=data["next_id"],
-            )
-            print(f"💾 Saved {len(self.vectors)} vectors to {path} (NPZ format)")
-            
-        elif format == "json":
-            # JSON format: human-readable
-            with open(path, 'w') as f:
-                json.dump(data, f, indent=2, default=str)
-            print(f"💾 Saved {len(self.vectors)} vectors to {path} (JSON format)")
-            
-        elif format == "pkl":
-            # Pickle format
-            with open(path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f"💾 Saved {len(self.vectors)} vectors to {path} (Pickle format)")
-        
-        else:
-            raise ValueError(f"Unknown format: {format}. Use 'npz', 'json', or 'pkl'")
-    
-    @classmethod
-    def load_from_disk(cls, filepath: str) -> "VectorStore":
-        """
-        Load vector store from disk (TASK 6).
-        
-        Automatically detects format based on file extension:
-        - .npz → NumPy format
-        - .json → JSON format
-        - .pkl → Pickle format
-        
-        Returns:
-            Loaded VectorStore instance
-        
-        Example:
-            store = VectorStore.load_from_disk("my_documents.npz")
-        """
-        path = Path(filepath)
-        if not path.exists():
-            raise FileNotFoundError(f"No save file found at {filepath}")
-        
-        extension = path.suffix.lower()
-        
-        if extension == '.npz':
-            # Load NPZ format
-            data = np.load(path, allow_pickle=True)
-            
-            store = cls(normalize_vectors=bool(data["normalize"]))
-            store.doc_id = str(data["doc_id"])
-            store._next_id = int(data["next_id"])
-            
-            # Reconstruct vectors
-            vectors_array = data["vectors"]
-            if len(vectors_array) > 0:
-                store.vectors = [v for v in vectors_array]
-            
-            # Reconstruct texts, metadata, ids
-            store.texts = list(data["texts"])
-            store.metadata = list(data["metadata"])
-            store.ids = list(data["ids"])
-            
-            print(f"📂 Loaded {store.size()} vectors from {filepath} (NPZ format)")
-            return store
-            
-        elif extension == '.json':
-            # Load JSON format
-            with open(path, 'r') as f:
-                data = json.load(f)
-            
-            store = cls(normalize_vectors=data.get("normalize", True))
-            store.doc_id = data.get("doc_id", store._generate_doc_id())
-            store._next_id = data.get("next_id", 0)
-            store.texts = data["texts"]
-            store.metadata = data["metadata"]
-            store.ids = data["ids"]
-            store.vectors = [np.array(v) for v in data["vectors"]] if data["vectors"] else []
-            
-            print(f"📂 Loaded {store.size()} vectors from {filepath} (JSON format)")
-            return store
-            
-        elif extension == '.pkl':
-            # Load Pickle format
-            with open(path, 'rb') as f:
-                data = pickle.load(f)
-            
-            store = cls(normalize_vectors=data.get("normalize", True))
-            store.doc_id = data.get("doc_id", store._generate_doc_id())
-            store._next_id = data.get("next_id", 0)
-            store.texts = data["texts"]
-            store.metadata = data["metadata"]
-            store.ids = data["ids"]
-            store.vectors = [np.array(v) for v in data["vectors"]] if data["vectors"] else []
-            
-            print(f"📂 Loaded {store.size()} vectors from {filepath} (Pickle format)")
-            return store
-            
-        else:
-            raise ValueError(f"Unknown file extension: {extension}. Use .npz, .json, or .pkl")
+        if len(self.vectors) > 0:
+            self.vectors.clear()
+            self.texts.clear()
+            self.metadata.clear()
+            self.ids.clear()
+            self._next_id = 0
+            self._dimension = None
+            self._increment_version()
     
     def has_document(self, doc_id: str) -> bool:
         """Check if a document with given ID exists in the store."""
-        # Check if any metadata has matching doc_id
         for meta in self.metadata:
             if meta.get("doc_id") == doc_id or meta.get("source") == doc_id:
                 return True
@@ -446,20 +485,138 @@ class VectorStore:
                 doc_ids.add(doc_id)
         return list(doc_ids)
     
+    def get_all_documents(self) -> List[Dict[str, Any]]:
+        """
+        Get all documents in the store.
+        
+        Returns:
+            List of dicts with text and metadata for each document
+        """
+        documents = []
+        for i, text in enumerate(self.texts):
+            doc = {
+                "text": text,
+                "metadata": self.metadata[i],
+                "id": self.ids[i] if i < len(self.ids) else f"doc_{i}",
+            }
+            documents.append(doc)
+        return documents
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get store statistics for debugging."""
-        dimensions = 0
-        if self.vectors:
-            dimensions = len(self.vectors[0])
-        
         return {
             "total_vectors": len(self.vectors),
-            "dimensions": dimensions,
-            "has_vectors": len(self.vectors) > 0,
-            "normalization_enabled": self._normalize,
-            "doc_id": self.doc_id,
+            "total_texts": len(self.texts),
+            "dimensions": self._dimension or 0,
+            "version": self._version,
+            "doc_id": self._doc_id,
             "document_ids": self.get_document_ids(),
+            "is_empty": self.is_empty(),
+            "has_documents": self.has_documents(),
         }
+    
+    def is_stale(self, other_version: int) -> bool:
+        """
+        Check if this store is stale compared to another version.
+        
+        Args:
+            other_version: Version to compare against
+        
+        Returns:
+            True if this store's version is less than other_version
+        """
+        return self._version < other_version
+    
+    def is_synced(self, other_version: int) -> bool:
+        """Check if this store is at the same version as another."""
+        return self._version == other_version
+    
+    # ========== PERSISTENCE METHODS ==========
+    
+    def save_to_disk(self, filepath: str, format: str = "npz") -> None:
+        """Save vector store to disk."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        data = {
+            "doc_id": self._doc_id,
+            "file_format_version": self.SAVE_FORMAT_VERSION,
+            "state_version": self._version,
+            "texts": self.texts,
+            "metadata": self.metadata,
+            "ids": self.ids,
+            "vectors": [v.tolist() for v in self.vectors] if self.vectors else [],
+            "normalize": self._normalize,
+            "next_id": self._next_id,
+            "dimension": self._dimension,
+            "created_at": self._created_at,
+            "last_modified": self._last_modified,
+        }
+        
+        if format == "npz":
+            np.savez_compressed(
+                path,
+                doc_id=data["doc_id"],
+                file_format_version=data["file_format_version"],
+                state_version=data["state_version"],
+                texts=np.array(self.texts, dtype=object),
+                metadata=np.array(self.metadata, dtype=object),
+                ids=np.array(self.ids, dtype=object),
+                vectors=np.array(self.vectors) if self.vectors else np.array([]),
+                normalize=data["normalize"],
+                next_id=data["next_id"],
+                dimension=self._dimension if self._dimension is not None else -1,
+                created_at=self._created_at,
+                last_modified=self._last_modified,
+            )
+            logger.info(f"💾 Saved {len(self.vectors)} vectors (v{self._version}) to {path}")
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+    
+    @classmethod
+    def load_from_disk(cls, filepath: str) -> "VectorStore":
+        """Load vector store from disk."""
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"No save file found at {filepath}")
+        
+        extension = path.suffix.lower()
+        
+        if extension == '.npz':
+            data = np.load(path, allow_pickle=True)
+            
+            store = cls(normalize_vectors=bool(data["normalize"]))
+            
+            # Load doc_id
+            doc_id_val = data["doc_id"]
+            if doc_id_val is not None and str(doc_id_val) != 'None':
+                store._doc_id = str(doc_id_val)
+            
+            # Load state version
+            if "state_version" in data:
+                store._version = int(data["state_version"])
+            else:
+                store._version = 0
+            
+            # Load other attributes
+            store._next_id = int(data["next_id"])
+            store._dimension = int(data["dimension"]) if data["dimension"] != -1 else None
+            store._created_at = str(data["created_at"]) if "created_at" in data else datetime.now().isoformat()
+            store._last_modified = str(data["last_modified"]) if "last_modified" in data else store._created_at
+            
+            # Reconstruct data
+            vectors_array = data["vectors"]
+            if len(vectors_array) > 0:
+                store.vectors = [v for v in vectors_array]
+            
+            store.texts = list(data["texts"])
+            store.metadata = list(data["metadata"])
+            store.ids = list(data["ids"])
+            
+            logger.info(f"📂 Loaded {store.size()} vectors (v{store._version}) from {filepath}")
+            return store
+        else:
+            raise ValueError(f"Unsupported file format: {extension}")
 
 
 # ========== CONVENIENCE FUNCTIONS ==========
@@ -485,60 +642,18 @@ def create_vector_store_from_chunks(
     return store
 
 
-def load_or_create_store(
-    filepath: str,
-    chunks: Optional[List[str]] = None,
-    embeddings_results: Optional[List[Dict[str, Any]]] = None,
-    doc_id: Optional[str] = None,
-) -> VectorStore:
-    """
-    Load store from disk if exists, otherwise create new.
-    
-    TASK 6: This is the main interface for persistent storage.
-    
-    Args:
-        filepath: Path to save/load file
-        chunks: Chunks to embed (if creating new)
-        embeddings_results: Embeddings (if creating new)
-        doc_id: Document ID
-    
-    Returns:
-        VectorStore instance (loaded or new)
-    
-    Example:
-        store = load_or_create_store(
-            "data/my_doc.npz",
-            chunks=chunks,
-            embeddings_results=embeddings,
-            doc_id="my_paper"
-        )
-    """
-    store_path = Path(filepath)
-    
-    if store_path.exists():
-        print(f"📂 Loading existing store from {filepath}")
-        return VectorStore.load_from_disk(filepath)
-    else:
-        print(f"🆕 Creating new store at {filepath}")
-        if chunks is None or embeddings_results is None:
-            raise ValueError("When creating new store, chunks and embeddings_results are required")
-        store = create_vector_store_from_chunks(chunks, embeddings_results, doc_id)
-        store.save_to_disk(filepath)
-        return store
-
-
 # ========== MODULE SELF-TEST ==========
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🗂️ Vector Store - Task 6: Persistence Test")
+    print("🗂️ Vector Store - Version Tracking Test")
     print("=" * 60)
     
-    # Test 1: Basic operations
-    print("\n📝 Test 1: Basic vector store operations")
+    # Create store
     store = VectorStore()
+    print(f"Initial version: {store.get_version()}")
     
-    # Create test data
+    # Add some items
     test_vectors = [
         np.array([1.0, 0.0, 0.0]),
         np.array([0.0, 1.0, 0.0]),
@@ -553,55 +668,27 @@ if __name__ == "__main__":
     
     for vec, text in zip(test_vectors, test_texts):
         store.add(vec, text)
+        print(f"Added: {text[:20]}... (version: {store.get_version()})")
     
-    print(f"   ✅ Added {store.size()} vectors")
-    print(f"   📊 Stats: {store.get_stats()}")
+    print(f"Final version: {store.get_version()}")
+    print(f"Store size: {store.size()}")
+    print(f"Has documents: {store.has_documents()}")
     
-    # Test 2: Persistence (save/load)
-    print("\n📝 Test 2: Save and load to disk")
-    import tempfile
+    # Test get_all_documents
+    print("\n📝 get_all_documents():")
+    docs = store.get_all_documents()
+    for doc in docs[:2]:
+        print(f"   - {doc['text'][:30]}... (id: {doc['id']})")
     
-    with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as tmp:
-        tmp_path = tmp.name
-    
-    try:
-        store.save_to_disk(tmp_path, format="npz")
-        
-        loaded_store = VectorStore.load_from_disk(tmp_path)
-        print(f"   ✅ Loaded {loaded_store.size()} vectors")
-        print(f"   Original size: {store.size()}")
-        print(f"   Loaded size: {loaded_store.size()}")
-        
-        # Verify data integrity
-        assert loaded_store.texts == store.texts
-        assert len(loaded_store.vectors) == len(store.vectors)
-        print("   ✅ Data integrity verified")
-        
-    finally:
-        Path(tmp_path).unlink()
-    
-    # Test 3: Search functionality
-    print("\n📝 Test 3: Search after reload")
-    query_vec = np.array([1.0, 0.2, 0.0])
-    results = store.search(query_vec, top_k=2)
-    
-    print(f"   Query: vectors similar to [1.0, 0.2, 0.0]")
-    for r in results:
-        print(f"      Score {r.score:.3f}: {r.text}")
-    
-    # Test 4: Document ID tracking
-    print("\n📝 Test 4: Document ID tracking")
-    doc_store = VectorStore(doc_id="test_document_001")
-    doc_store.add(np.array([1.0]), "Content", metadata={"source": "test_document_001"})
-    print(f"   Document ID: {doc_store.doc_id}")
-    print(f"   Has document: {doc_store.has_document('test_document_001')}")
-    print(f"   All document IDs: {doc_store.get_document_ids()}")
+    # Test version tracking after deletion
+    print("\n📝 Version after deletion:")
+    store.delete_by_id("chunk_1")
+    print(f"   After deletion: version = {store.get_version()}")
     
     print("\n" + "=" * 60)
-    print("✅ Task 6 Complete - Vector Store with Persistence!")
-    print("   Features:")
-    print("   - In-memory search with cosine similarity")
-    print("   - Disk persistence (NPZ/JSON/Pickle formats)")
-    print("   - Document ID tracking")
-    print("   - Fast reload on restart (skip recomputation)")
+    print("✅ Vector Store ready with version tracking!")
+    print("   - get_version() for hybrid retriever compatibility")
+    print("   - Monotonic version counter")
+    print("   - get_all_documents() for BM25 indexing")
+    print("   - has_documents() check")
     print("=" * 60)

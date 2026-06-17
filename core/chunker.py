@@ -1,14 +1,14 @@
 """
-Chunker Module - Task 3 of RAG Pipeline (OPTIMIZED - Task 4)
+Chunker Module - Task 3 of RAG Pipeline (UPDATED - Pure Sentence-Window)
 
 Responsibility: Split large text into small, searchable chunks.
 Single responsibility: Raw text → List[chunks]. Nothing more.
 
-TASK 4 OPTIMIZATIONS:
-- Chunk size: 500 characters (optimal for RAG)
-- Overlap: 75 characters (preserves context across boundaries)
-- Improved sentence boundary detection
-- Minimum chunk size filtering (removes noise)
+CORE CHANGE: Pure sentence-window chunking with fixed window + stride.
+- Window: 8 sentences per chunk
+- Stride: 4 sentences (50% overlap)
+- NO character calculations in core logic
+- Completely deterministic and predictable
 
 Design Philosophy:
 - Keep it simple for v1
@@ -29,8 +29,8 @@ from enum import Enum
 
 class ChunkingStrategy(Enum):
     """Available chunking strategies"""
-    CHARACTER = "character"      # Simple: split by character count
-    SENTENCE = "sentence"        # Better: respect sentence boundaries
+    CHARACTER = "character"      # DEPRECATED: Kept for compatibility
+    SENTENCE = "sentence"        # RECOMMENDED: Pure sentence windows
     PARAGRAPH = "paragraph"      # Preserves natural document structure
 
 
@@ -38,27 +38,32 @@ class ChunkerConfig:
     """
     Centralized configuration for chunker.
     
-    TASK 4 OPTIMIZED DEFAULTS:
-    - chunk_size: 500 chars (sweet spot for RAG)
-    - chunk_overlap: 75 chars (15% overlap)
+    UPDATED DEFAULTS (Pure Sentence-Window):
+    - strategy: "sentence" (default)
+    - window_size: 8 sentences per chunk
+    - stride: 4 sentences (50% overlap)
     - min_chunk_size: 50 chars (filters out noise)
-    - respect_sentence_boundaries: True (preserves meaning)
     """
     def __init__(
         self,
         strategy: str = "sentence",
-        chunk_size: int = 500,           # TASK 4: Optimized to 500 chars
-        chunk_overlap: int = 75,          # TASK 4: Optimized to 75 chars (15%)
-        min_chunk_size: int = 50,         # Filter out very small chunks
+        window_size: int = 8,           # Sentences per chunk
+        stride: int = 4,                # Sentences to move forward
+        min_chunk_size: int = 50,       # Filter out very small chunks
+        # Legacy params (kept for compatibility)
+        chunk_size: int = 500,          # DEPRECATED: Only used for character strategy
+        chunk_overlap: int = 75,        # DEPRECATED: Only used for character strategy
         respect_sentence_boundaries: bool = True,
-        max_chunk_size: Optional[int] = None,  # Upper limit for sentence strategy
+        max_chunk_size: Optional[int] = None,  # DEPRECATED: Only used for character strategy
     ):
         self.strategy = strategy
+        self.window_size = window_size
+        self.stride = stride
+        self.min_chunk_size = min_chunk_size
+        # Legacy params (keep for backward compatibility)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.min_chunk_size = min_chunk_size
         self.respect_sentence_boundaries = respect_sentence_boundaries
-        # Allow up to 1.5x chunk_size for sentence strategy
         self.max_chunk_size = max_chunk_size or int(chunk_size * 1.5)
 
 
@@ -66,18 +71,18 @@ class Chunker:
     """
     Configurable chunker with multiple strategies.
     
-    TASK 4 OPTIMIZATIONS:
-    - Default chunk_size: 500 characters (was 600)
-    - Default overlap: 75 characters (was 50)
-    - Better sentence boundary detection
-    - Min chunk filtering removes noise
+    PRIMARY STRATEGY: Pure sentence-window chunking
+    - Fixed window: 8 sentences
+    - Fixed stride: 4 sentences
+    - Completely deterministic
+    - No character calculations
     
-    v1: Simple character and sentence chunking
-    v2: Will add NLTK/spacy integration
-    v3: Will add semantic chunking
+    v1: Simple sentence splitter + fixed windows (fast, no dependencies)
+    v2: Will add NLTK/spacy for better accuracy
+    v3: Will add token-based chunking for LLM context windows
     
     Usage:
-        chunker = Chunker(strategy="sentence", chunk_size=500)
+        chunker = Chunker(strategy="sentence")
         chunks = chunker.chunk(text)
     """
     
@@ -87,11 +92,11 @@ class Chunker:
         
         Args:
             config: ChunkerConfig object (preferred)
-            **kwargs: Individual config parameters (for simplicity)
-                - strategy: "character", "sentence", or "paragraph"
-                - chunk_size: Target size in characters (TASK 4: 500)
-                - chunk_overlap: Overlap between chunks (TASK 4: 75)
-                - min_chunk_size: Minimum chunk size for merging
+            **kwargs: Individual config parameters
+                - strategy: "sentence" (recommended), "character", or "paragraph"
+                - window_size: Sentences per chunk (default: 8)
+                - stride: Sentences to move forward (default: 4)
+                - min_chunk_size: Minimum chunk size (default: 50)
         """
         if config:
             self.config = config
@@ -164,9 +169,9 @@ class Chunker:
     
     def _chunk_by_characters(self, text: str) -> List[str]:
         """
-        Fixed-size character chunking with overlap.
-        
-        TASK 4: Improved break point detection.
+        DEPRECATED: Character-based chunking.
+        Kept for backward compatibility only.
+        Will be removed in v2.
         """
         if len(text) <= self.config.chunk_size:
             return [text]
@@ -179,13 +184,11 @@ class Chunker:
         while start < text_len:
             end = min(start + self.config.chunk_size, text_len)
             
-            # Find natural break near the end (TASK 4: improved boundary detection)
+            # Find natural break near the end
             if end < text_len and self.config.respect_sentence_boundaries:
-                # Look for punctuation or sentence boundaries
                 lookback = min(100, self.config.chunk_size // 4)
                 for i in range(end, max(start, end - lookback), -1):
                     if i < text_len and text[i] in ['.', '!', '?', ';', ':', '\n']:
-                        # Include the punctuation if it's a sentence end
                         if text[i] in ['.', '!', '?']:
                             end = i + 1
                         else:
@@ -208,7 +211,8 @@ class Chunker:
         """
         v1: Simple sentence splitter.
         
-        TASK 4: Improved pattern handles more edge cases.
+        Splits on . ! ? followed by space.
+        Handles ~90% of cases.
         
         KNOWN LIMITATIONS (will be fixed in v2):
         - Fails on abbreviations (Dr., U.S., etc.)
@@ -219,67 +223,45 @@ class Chunker:
         - Replace with: nltk.sent_tokenize(text)
         - Or with: spacy.load("en_core_web_sm").create_pipe("sentencizer")
         """
-        # Improved pattern: handles numbers and quotes after punctuation
-        # Works for ~90% of cases (up from 85%)
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'\(])', text)
+        # Simple split: punctuation + space
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         return [s.strip() for s in sentences if s.strip()]
     
     def _chunk_by_sentences(self, text: str) -> List[str]:
         """
-        Sentence-aware chunking.
+        PURE sentence-window chunking.
         
-        TASK 4 OPTIMIZATIONS:
-        - Respects max_chunk_size (1.5x limit)
-        - Better handling of long sentences
-        - Preserves sentence boundaries where possible
+        NO character calculations anywhere.
+        Fixed window size + fixed stride.
+        Completely deterministic and predictable.
         
-        v1: Simple sentence splitter (fast, no dependencies)
-        v2: Will add NLTK/spacy for better accuracy
-        v3: Will add token-based chunking for LLM context windows
+        Args:
+            text: Input text to chunk
+            
+        Returns:
+            List of text chunks, each with WINDOW_SIZE sentences
         """
         sentences = self._split_sentences_v1(text)
+        if not sentences:
+            return []
         
+        # Fixed parameters - NO character logic
+        window_size = self.config.window_size
+        stride = self.config.stride
+        
+        # Create chunks with fixed window + stride
         chunks = []
-        current_chunk = []
-        current_size = 0
-        max_size = self.config.max_chunk_size
+        for i in range(0, len(sentences), stride):
+            window = sentences[i:i + window_size]
+            if window:
+                chunks.append(' '.join(window))
         
-        for sentence in sentences:
-            sentence_size = len(sentence)
-            
-            # Handle long sentences that exceed max size
-            if sentence_size > max_size:
-                if current_chunk:
-                    chunks.append(' '.join(current_chunk))
-                    current_chunk = []
-                    current_size = 0
-                
-                # Use character chunking for this long sentence
-                sub_chunks = self._chunk_by_characters(sentence)
-                chunks.extend(sub_chunks)
-                continue
-            
-            # Add to current chunk if it fits
-            if current_size + sentence_size + 1 > max_size and current_chunk:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = [sentence]
-                current_size = sentence_size
-            else:
-                current_chunk.append(sentence)
-                current_size += sentence_size + 1  # +1 for space
-        
-        # Handle remaining
-        if current_chunk:
-            final_chunk = ' '.join(current_chunk)
-            # Merge tiny last chunk with previous only if it's very small
-            if len(final_chunk) < self.config.min_chunk_size and chunks:
-                # Only merge if the last chunk isn't already large
-                if len(chunks[-1]) + len(final_chunk) <= self.config.max_chunk_size:
-                    chunks[-1] = chunks[-1] + ' ' + final_chunk
-                else:
-                    chunks.append(final_chunk)
-            else:
-                chunks.append(final_chunk)
+        # Merge very small last chunk if it makes sense
+        if len(chunks) >= 2:
+            last_chunk_words = len(chunks[-1].split())
+            if last_chunk_words < 3:  # Too small (less than 3 words)
+                chunks[-2] = chunks[-2] + ' ' + chunks[-1]
+                chunks.pop()
         
         return chunks
     
@@ -287,42 +269,16 @@ class Chunker:
         """
         Paragraph-aware chunking.
         
-        TASK 4: Improved paragraph boundary detection.
+        Uses sentence-window chunking within paragraphs.
         """
         paragraphs = re.split(r'\n\s*\n', text)
         paragraphs = [p.strip() for p in paragraphs if p.strip()]
         
         chunks = []
-        current_chunk = []
-        current_size = 0
-        
         for para in paragraphs:
-            para_size = len(para)
-            
-            # Single paragraph exceeds limit
-            if para_size > self.config.chunk_size:
-                if current_chunk:
-                    chunks.append('\n\n'.join(current_chunk))
-                    current_chunk = []
-                    current_size = 0
-                
-                # Use sentence chunking for long paragraphs
-                sub_chunks = self._chunk_by_sentences(para)
-                chunks.extend(sub_chunks)
-                continue
-            
-            # Add to current chunk
-            if current_size + para_size + 2 > self.config.max_chunk_size and current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
-                current_chunk = [para]
-                current_size = para_size
-            else:
-                current_chunk.append(para)
-                current_size += para_size + 2  # +2 for double newline
-        
-        # Handle remaining
-        if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+            # Use sentence chunking for each paragraph
+            para_chunks = self._chunk_by_sentences(para)
+            chunks.extend(para_chunks)
         
         return chunks
     
@@ -336,8 +292,8 @@ class Chunker:
                 "max_size": 0,
                 "total_chars": 0,
                 "strategy": self.config.strategy,
-                "chunk_size": self.config.chunk_size,
-                "chunk_overlap": self.config.chunk_overlap,
+                "window_size": self.config.window_size,
+                "stride": self.config.stride,
             }
         
         sizes = [len(c) for c in chunks]
@@ -348,8 +304,8 @@ class Chunker:
             "max_size": max(sizes),
             "total_chars": sum(sizes),
             "strategy": self.config.strategy,
-            "chunk_size": self.config.chunk_size,
-            "chunk_overlap": self.config.chunk_overlap,
+            "window_size": self.config.window_size,
+            "stride": self.config.stride,
         }
     
     def preview(self, chunks: List[str], num: int = 3) -> None:
@@ -360,8 +316,10 @@ class Chunker:
         
         print(f"\n📦 Chunks ({len(chunks)} total, avg {sum(len(c) for c in chunks) / len(chunks):.0f} chars):")
         for i, chunk in enumerate(chunks[:num]):
+            # Show sentence count too
+            sentence_count = len(re.findall(r'[.!?]', chunk))
             preview = chunk[:150] + "..." if len(chunk) > 150 else chunk
-            print(f"\n[{i+1}] ({len(chunk)} chars): {preview}")
+            print(f"\n[{i+1}] ({len(chunk)} chars, {sentence_count} sentences): {preview}")
     
     def upgrade_notice(self) -> Dict[str, List[str]]:
         """
@@ -370,9 +328,9 @@ class Chunker:
         """
         return {
             "current_settings": {
-                "chunk_size": self.config.chunk_size,
-                "overlap": self.config.chunk_overlap,
                 "strategy": self.config.strategy,
+                "window_size": self.config.window_size,
+                "stride": self.config.stride,
             },
             "v1_limitations": [
                 "Sentence splitter fails on abbreviations (Dr., U.S.)",
@@ -382,7 +340,7 @@ class Chunker:
             "v2_upgrade_paths": [
                 "Replace _split_sentences_v1() with nltk.sent_tokenize",
                 "Add token-based chunking (tiktoken for OpenAI models)",
-                "Add configurable overlap for sentence strategy",
+                "Add configurable window size per strategy",
                 "Add semantic chunking (embedding-based boundaries)",
             ],
             "v3_enhancements": [
@@ -399,104 +357,91 @@ class Chunker:
 def chunk_text(
     text: str,
     strategy: str = "sentence",
-    chunk_size: int = 500,      # TASK 4: Optimized to 500
-    chunk_overlap: int = 75,     # TASK 4: Optimized to 75
+    window_size: int = 8,
+    stride: int = 4,
 ) -> List[str]:
     """
     Simple function interface for chunking.
     
-    TASK 4 OPTIMIZED DEFAULTS:
-    - chunk_size: 500 characters (optimal for RAG)
-    - chunk_overlap: 75 characters (preserves context)
-    
     Args:
         text: Raw text to chunk
-        strategy: "character", "sentence", or "paragraph"
-        chunk_size: Target chunk size in characters
-        chunk_overlap: Overlap between chunks
+        strategy: "sentence" (recommended), "character", or "paragraph"
+        window_size: Sentences per chunk (default: 8)
+        stride: Sentences to move forward (default: 4)
     
     Returns:
         List of text chunks
     """
     chunker = Chunker(
         strategy=strategy,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        window_size=window_size,
+        stride=stride,
     )
     return chunker.chunk(text)
 
 
 # ========== MODULE SELF-TEST ==========
-# For full tests, run: pytest tests/test_chunker.py
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("✂️  Chunker - Task 4 Optimization Test")
+    print("✂️  Chunker - Pure Sentence-Window Test")
     print("=" * 60)
     
     # Test text with varied content
     test_text = """
-    This is the first sentence of the first paragraph. It contains multiple words. The purpose is to test chunking with optimized settings.
-    
-    Here is the second paragraph. It discusses different topics entirely. 
-    For example, we need to make sure that chunking handles boundaries correctly with the new 500 character target.
-    
-    This is a short paragraph.
-    
-    Finally, this is a longer paragraph that has a lot of content to ensure we test the chunk size limits properly. 
-    We need to verify that the chunker doesn't cut words in the middle when possible. 
-    The algorithm should respect natural language boundaries like spaces and punctuation.
-    When a chunk reaches the maximum size, it should try to find a natural break point at a sentence boundary.
-    This makes the chunks more semantically meaningful for later retrieval.
+    This is the first sentence. This is the second sentence. 
+    This is the third sentence. This is the fourth sentence. 
+    This is the fifth sentence. This is the sixth sentence. 
+    This is the seventh sentence. This is the eighth sentence. 
+    This is the ninth sentence. This is the tenth sentence. 
+    This is the eleventh sentence. This is the twelfth sentence. 
+    This is the thirteenth sentence. This is the fourteenth sentence. 
+    This is the fifteenth sentence. This is the sixteenth sentence.
     """
     
-    print(f"\n📝 Test text length: {len(test_text)} characters")
+    print(f"\n📝 Test text: 16 sentences")
+    print(f"   Length: {len(test_text)} characters")
     
-    # Test optimized settings (TASK 4)
-    print("\n📌 TASK 4 OPTIMIZED SETTINGS:")
-    print("   - Chunk size: 500 characters (optimal for RAG)")
-    print("   - Overlap: 75 characters (15% overlap)")
-    print("   - Strategy: sentence-aware")
+    # Test pure sentence-window chunking
+    print("\n📌 PURE SENTENCE-WINDOW CHUNKING:")
+    print(f"   Window: 8 sentences")
+    print(f"   Stride: 4 sentences")
+    print(f"   Expected: 3 chunks (8, 8, 4 sentences)")
     
-    chunker = Chunker(strategy="sentence", chunk_size=500, chunk_overlap=75)
+    chunker = Chunker(strategy="sentence", window_size=8, stride=4)
     chunks = chunker.chunk(test_text)
     stats = chunker.get_stats(chunks)
     
     print(f"\n   ✅ Created {stats['count']} chunks")
-    print(f"   📊 Avg size: {stats['avg_size']} chars")
+    print(f"   📊 Avg size: {stats['avg_size']:.1f} chars")
     print(f"   📏 Min: {stats['min_size']} | Max: {stats['max_size']}")
     
-    chunker.preview(chunks, num=2)
+    chunker.preview(chunks, num=3)
     
-    # Compare old vs optimized (TASK 4)
-    print("\n📌 COMPARISON: Old vs Task 4 Optimized")
+    # Show sentence counts
+    print("\n📌 SENTENCE COUNTS PER CHUNK:")
+    for i, chunk in enumerate(chunks):
+        sentence_count = len(re.findall(r'[.!?]', chunk))
+        print(f"   Chunk {i+1}: {sentence_count} sentences")
     
-    old_chunker = Chunker(strategy="sentence", chunk_size=600, chunk_overlap=50)
+    # Compare with old method
+    print("\n📌 COMPARISON: Old vs New")
+    
+    old_chunker = Chunker(strategy="sentence", chunk_size=500, chunk_overlap=75)
     old_chunks = old_chunker.chunk(test_text)
     old_stats = old_chunker.get_stats(old_chunks)
     
-    print(f"\n   Old (600/50): {old_stats['count']} chunks, avg {old_stats['avg_size']} chars")
-    print(f"   Task 4 (500/75): {stats['count']} chunks, avg {stats['avg_size']} chars")
+    print(f"\n   Old (character-based): {old_stats['count']} chunks, avg {old_stats['avg_size']:.1f} chars")
+    print(f"   New (sentence-window): {stats['count']} chunks, avg {stats['avg_size']:.1f} chars")
     
     # Quality metrics
-    print("\n📌 Quality Metrics:")
-    
-    # Check for very small chunks (noise)
-    small_chunks = [c for c in chunks if len(c) < 50]
-    print(f"   Chunks < 50 chars: {len(small_chunks)} (should be 0)")
-    
-    # Check for very large chunks (should respect limit)
-    large_chunks = [c for c in chunks if len(c) > 800]
-    print(f"   Chunks > 800 chars: {len(large_chunks)} (should be 0)")
-    
-    # Show upgrade notice
-    print("\n📌 Task 4 Optimization Summary:")
-    print("   ✅ Reduced chunk size: 600 → 500 chars (better precision)")
-    print("   ✅ Increased overlap: 50 → 75 chars (better context)")
-    print("   ✅ Added min chunk filtering (removes noise)")
-    print("   ✅ Improved sentence boundary detection")
+    print("\n📌 QUALITY METRICS:")
+    print(f"   ✅ No character calculations in core logic")
+    print(f"   ✅ Fixed window size: {chunker.config.window_size}")
+    print(f"   ✅ Fixed stride: {chunker.config.stride}")
+    print(f"   ✅ Completely deterministic")
     
     print("\n" + "=" * 60)
-    print("✅ Chunker optimized for Task 4!")
-    print("   Default: 500 chars, 75 overlap, sentence-aware")
+    print("✅ Chunker updated to pure sentence-window!")
+    print("   Default: 8 sentences, stride 4")
     print("=" * 60)

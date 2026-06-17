@@ -362,17 +362,34 @@ class Retriever:
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
         apply_fallback: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Enhanced interface: returns full dict with metadata.
+        Enhanced interface: returns dict with results and debug info.
         
-        Ideal for UI debug panels that need source information.
+        COMPATIBILITY FIX: Returns dict with "results" and "debug" keys
+        to match what hybrid_retriever.py expects.
+        
+        Args:
+            query: User question or search query
+            top_k: Override config top_k for this call
+            score_threshold: Override config score_threshold for this call
+            apply_fallback: If True, ensures at least min_results are returned
         
         Returns:
-            List of dicts with keys: text, score, source, metadata, rank
+            Dict with "results" (List[Dict]) and "debug" (Dict) keys
+        
+        Example:
+            >>> retriever = Retriever(store)
+            >>> result = retriever.retrieve_with_metadata("What is RAG?")
+            >>> for r in result["results"]:
+            ...     print(f"{r['source']}: {r['score']:.3f}")
         """
         results = self.retrieve(query, top_k, score_threshold, apply_fallback)
-        return [r.to_dict() for r in results]
+        
+        return {
+            "results": [r.to_dict() for r in results],
+            "debug": self.get_debug_info(results),
+        }
     
     def retrieve_one(
         self,
@@ -474,6 +491,7 @@ class Retriever:
                 "avg_score": 0.0,
                 "timestamp": self._last_timestamp,
                 "total_chunks": 0,
+                "passed_threshold": [],
             }
         
         chunks = [r.text for r in results]
@@ -619,11 +637,17 @@ if __name__ == "__main__":
     print(f"   Avg Score: {debug_info['avg_score']:.3f}")
     print(f"   Sources: {debug_info['sources']}")
     
-    # Test 3: retrieve_with_metadata method
-    print("\n📝 Test 3: retrieve_with_metadata() for UI panels")
-    metadata_results = retriever.retrieve_with_metadata("test query")
-    for r in metadata_results:
+    # Test 3: retrieve_with_metadata method (FIXED - returns dict)
+    print("\n📝 Test 3: retrieve_with_metadata() - compatibility fix")
+    metadata_result = retriever.retrieve_with_metadata("test query")
+    print(f"   Type: {type(metadata_result)}")
+    print(f"   Keys: {metadata_result.keys()}")
+    print(f"   Results count: {len(metadata_result['results'])}")
+    
+    for r in metadata_result["results"]:
         print(f"   - {r['source']}: {r['score']:.3f} ({r['chunk_length']} chars)")
+    
+    print(f"   Debug info: {metadata_result['debug']['total_chunks']} chunks")
     
     # Test 4: Formatted context with enhanced source tracking
     print("\n📝 Test 4: Formatted context with source tracking")
@@ -637,4 +661,5 @@ if __name__ == "__main__":
     print("   - Enhanced metadata for debug panel (source tracking)")
     print("   - Intelligent fallback (prevents empty responses)")
     print("   - get_debug_info() for UI integration")
+    print("   - 🔧 FIXED: retrieve_with_metadata() returns dict with results+debug")
     print("=" * 60)
