@@ -1,4 +1,6 @@
-# 📄 RAG Document Chatbot (v2 - Hybrid RAG + FAISS Upgrade + Modular Pipeline)
+# 📄 RAG Document Chatbot
+
+### Hybrid Retrieval (FAISS + BM25) • Queue-Based Processing • Modular RAG Architecture
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Deployed-red.svg)
@@ -14,48 +16,65 @@
 ## 🌐 Deployed Application
 
 👉 **Live App:**
-[https://jay-rag-chatbot.streamlit.app/](https://jay-rag-chatbot.streamlit.app/)
+https://jay-rag-chatbot.streamlit.app/
 
 ---
 
 ## 🎥 Video Demonstration
 
-[https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4](https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4)
-
----
-
-# 📌 Project Evolution (IMPORTANT UPDATE)
-
-> ⚠️ This project has evolved from a basic FAISS RAG chatbot into a **production-style Hybrid Retrieval System**
-
-### 🔄 Major Upgrades
-
-* Migrated from **NumPy cosine similarity → FAISS vector indexing**
-* Added **Hybrid Retrieval (FAISS + BM25)**
-* Implemented **Reciprocal Rank Fusion (RRF)** for improved ranking
-* Introduced **modular RAG architecture (pipeline/orchestrator design)**
-* Added **singleton embedding model (loaded once for performance)**
-* Implemented **embedding cache with persistence**
-* Added **automatic index versioning & rebuild logic**
-* Introduced **retrieval debugging panel (scores + sources)**
-* Added **query/response performance timing logs**
-* Improved **UI feedback with real-time pipeline visibility**
-* Enhanced **scalability for 1000+ document chunks**
+https://github.com/jaymwangi/document-ai-chatbot/blob/main/assets/demo/rag_doc_chatbot_demo.mp4
 
 ---
 
 # 📌 Overview
 
-The **RAG Document Chatbot** is a full-stack AI system that allows users to upload PDF documents and ask natural language questions grounded strictly in their content.
+The **RAG Document Chatbot** is a Retrieval-Augmented Generation (RAG) system that allows users to upload PDF documents and ask natural language questions grounded in document content.
 
-It uses a **Retrieval-Augmented Generation (RAG)** pipeline combining:
+The system combines:
 
-* Dense retrieval (FAISS)
-* Sparse retrieval (BM25)
-* Ranking fusion (RRF)
-* LLM-based response generation
+* Dense retrieval using FAISS
+* Sparse retrieval using BM25
+* Reciprocal Rank Fusion (RRF)
+* LLM-powered answer generation
+* Queue-based request management
 
-This hybrid design significantly improves **accuracy, recall, and robustness** compared to pure vector search systems.
+This hybrid retrieval architecture improves both semantic understanding and keyword recall compared to traditional vector-only search systems.
+
+---
+
+# 🏛️ Architecture Highlights
+
+This project was designed using production-inspired engineering principles:
+
+* Hybrid retrieval (FAISS + BM25)
+* Reciprocal Rank Fusion (RRF)
+* Modular orchestration layer
+* Queue-based request processing
+* Single-flight execution model
+* Persistent vector storage
+* Embedding cache persistence
+* Automatic index versioning and rebuilding
+* Rate-limit handling and retry logic
+* Retrieval observability and debugging
+* Separation of UI and business logic
+
+---
+
+# 🔄 Project Evolution
+
+Major improvements from the original implementation:
+
+* Migrated from NumPy cosine similarity to FAISS indexing
+* Added Hybrid Retrieval (FAISS + BM25)
+* Implemented Reciprocal Rank Fusion (RRF)
+* Introduced modular pipeline architecture
+* Added singleton embedding model loading
+* Implemented persistent embedding caching
+* Added automatic index rebuild/version tracking
+* Introduced retrieval debugging tools
+* Added request timing and performance monitoring
+* Implemented queue-based request management
+* Added rate-limit recovery handling
 
 ---
 
@@ -63,19 +82,22 @@ This hybrid design significantly improves **accuracy, recall, and robustness** c
 
 * 📄 PDF upload and parsing
 * ✂️ Intelligent overlapping chunking
-* 🧠 Sentence-transformer embeddings
-* ⚡ FAISS vector indexing (fast semantic search)
+* 🧠 Sentence Transformer embeddings
+* ⚡ FAISS vector indexing
 * 🔍 Hybrid retrieval (FAISS + BM25)
 * 🎯 Reciprocal Rank Fusion (RRF)
 * 💾 Persistent embedding cache
-* 🧠 Singleton embedding model (loaded once)
+* 🧠 Singleton embedding model
+* 📋 FIFO request queue
+* 🔒 Single-flight request execution
+* ⏳ Automatic rate-limit handling
 * 📚 Document-aware question generation
 * ❓ Follow-up question suggestions
-* ✨ Autocomplete system
+* ✨ Autocomplete support
 * 🧾 Source attribution with retrieval scores
-* 🧪 Retrieval debug panel (inspect chunks + ranking)
-* ⏱️ Full pipeline performance tracing
-* 🤖 Groq / OpenAI LLM integration
+* 🧪 Retrieval debugging panel
+* ⏱️ Pipeline performance tracing
+* 🤖 Groq / OpenAI integration
 * 💬 Streamlit chat interface
 
 ---
@@ -83,26 +105,36 @@ This hybrid design significantly improves **accuracy, recall, and robustness** c
 # 🏗️ System Architecture
 
 ```text
-User Query
-    ↓
-Streamlit Frontend
-    ↓
+User
+ │
+ ▼
+Streamlit UI
+ │
+ ▼
+Request Queue
+ │
+ ▼
+Single-Flight Controller
+ │
+ ▼
 RAG Orchestrator
-    ↓
-Query Embedding
-    ↓
-Hybrid Retrieval Layer
-   ┌──────────────┬──────────────┐
-   │              │              │
- FAISS         BM25        Metadata Filter
-   │              │
-   └────── RRF (Fusion) ───────┘
-              ↓
-      Top-K Retrieved Chunks
-              ↓
-        LLM Generator
-              ↓
-        Final Answer
+ │
+ ├──────── Query Embedding
+ │
+ ├──────── FAISS Retrieval
+ │
+ ├──────── BM25 Retrieval
+ │
+ └──────── RRF Fusion
+          │
+          ▼
+      Top-K Context
+          │
+          ▼
+      LLM Generator
+          │
+          ▼
+      Final Answer
 ```
 
 ---
@@ -111,7 +143,7 @@ Hybrid Retrieval Layer
 
 ## 1️⃣ Document Upload
 
-PDF files are uploaded via Streamlit UI.
+PDF files are uploaded through the Streamlit interface.
 
 ## 2️⃣ Text Extraction
 
@@ -119,58 +151,92 @@ Documents are parsed into raw text.
 
 ## 3️⃣ Chunking
 
-Overlapping chunks preserve semantic continuity.
+Text is split into overlapping chunks to preserve context.
 
 ## 4️⃣ Embedding Generation
 
-Sentence Transformers convert chunks into vectors.
+Sentence Transformers convert chunks into vector embeddings.
 
-## 5️⃣ Indexing
+## 5️⃣ Index Construction
 
-* FAISS builds dense vector index
-* BM25 builds sparse lexical index
+* FAISS builds the dense vector index
+* BM25 builds the sparse lexical index
 
 ## 6️⃣ Query Processing
 
-User query is embedded and tokenized.
+The user query is embedded and prepared for retrieval.
 
 ## 7️⃣ Hybrid Retrieval
 
 * FAISS retrieves semantic matches
-* BM25 retrieves keyword matches
-* RRF merges rankings into final results
+* BM25 retrieves lexical matches
+* RRF combines rankings into a final result set
 
-## 8️⃣ LLM Generation
+## 8️⃣ Answer Generation
 
-Retrieved context is passed to Groq/OpenAI for grounded answers.
+Retrieved context is passed to the LLM to generate a grounded answer.
 
 ---
 
-# ⚙️ Performance Optimizations
+# ⚡ Performance Optimizations
 
 * Singleton embedding model prevents repeated loading
 * Embedding cache avoids recomputation
-* FAISS search typically < 50ms
+* FAISS provides efficient semantic retrieval
 * BM25 rebuilds only when documents change
-* Hybrid retrieval improves recall vs vector-only systems
-* Small ingestion pipeline: ~2–5 seconds per document batch
+* Persistent storage reduces startup overhead
+* Queue-based execution prevents request collisions
+* Rate-limit recovery prevents request loss
+
+---
+
+# 🔧 Engineering Challenges Solved
+
+## Retrieval Quality
+
+Implemented hybrid retrieval combining:
+
+* Dense semantic search (FAISS)
+* Sparse lexical search (BM25)
+* Reciprocal Rank Fusion (RRF)
+
+to improve ranking robustness and retrieval recall.
+
+## Embedding Performance
+
+Implemented:
+
+* Singleton model loading
+* Persistent embedding caching
+
+to eliminate unnecessary recomputation.
+
+## Request Management
+
+Implemented:
+
+* Queue-based processing
+* Single-flight execution
+* Rate-limit recovery
+
+to ensure predictable application behavior under user load.
 
 ---
 
 # 🧰 Tech Stack
 
-| Component     | Technology                   |
-| ------------- | ---------------------------- |
-| Frontend      | Streamlit                    |
-| Backend       | Python                       |
-| Embeddings    | Sentence Transformers        |
-| Vector DB     | FAISS                        |
-| Sparse Search | BM25                         |
-| Fusion        | Reciprocal Rank Fusion (RRF) |
-| LLMs          | Groq / OpenAI                |
-| PDF Parsing   | PyPDF                        |
-| Architecture  | Modular RAG Pipeline         |
-| Deployment    | Streamlit Cloud              |
+| Component        | Technology                   |
+| ---------------- | ---------------------------- |
+| Frontend         | Streamlit                    |
+| Backend          | Python                       |
+| Embeddings       | Sentence Transformers        |
+| Vector Search    | FAISS                        |
+| Sparse Retrieval | BM25                         |
+| Fusion           | Reciprocal Rank Fusion (RRF) |
+| LLMs             | Groq / OpenAI                |
+| PDF Parsing      | PyPDF                        |
+| Architecture     | Modular RAG Pipeline         |
+| Deployment       | Streamlit Cloud              |
 
 ---
 
@@ -180,6 +246,7 @@ Retrieved context is passed to Groq/OpenAI for grounded answers.
 rag-document-chatbot/
 │
 ├── app.py
+├── app_state.py
 ├── requirements.txt
 ├── runtime.txt
 ├── README.md
@@ -199,17 +266,14 @@ rag-document-chatbot/
 │   ├── retriever.py
 │   ├── hybrid_retriever.py
 │   ├── generator.py
-│   ├── reranker.py
-│   ├── query_guard.py
-│   └── question_generator.py
+│   ├── question_generator.py
 │
 ├── data/
 │   ├── stores/
 │   └── cache_manifest.json
 │
 ├── assets/
-│   ├── demo/
-│   └── screenshots/
+│   └── demo/
 │
 └── tests/
 ```
@@ -218,22 +282,26 @@ rag-document-chatbot/
 
 # ⚙️ Installation
 
-## 1️⃣ Clone Repository
+## Clone Repository
 
 ```bash
 git clone https://github.com/jaymwangi/document-ai-chatbot.git
 cd document-ai-chatbot
 ```
 
-## 2️⃣ Create Virtual Environment
+## Create Virtual Environment
 
 ```bash
 python -m venv venv
-venv\Scripts\activate   # Windows
+
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
 source venv/bin/activate
 ```
 
-## 3️⃣ Install Dependencies
+## Install Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -258,55 +326,73 @@ streamlit run app.py
 
 Open:
 
-```
+```text
 http://localhost:8501
 ```
 
 ---
 
-# ☁️ Deployment
+# 📈 Results
 
-1. Push to GitHub
-2. Connect Streamlit Cloud
-3. Add secrets
-4. Deploy
+The current system provides:
 
----
+* Hybrid retrieval using FAISS + BM25
+* Source-grounded responses
+* Persistent embedding caching
+* Automatic index management
+* Follow-up question generation
+* Retrieval score inspection
+* Queue-based request processing
 
-# 📊 Performance Notes
-
-* FAISS enables sub-50ms semantic search
-* BM25 improves keyword recall
-* RRF fusion improves ranking robustness
-* Modular pipeline enables production scaling
-* Retrieval debugging improves interpretability
+Compared to vector-only retrieval, hybrid search improves robustness for both semantic and keyword-heavy queries.
 
 ---
 
 # 🔮 Future Improvements
 
 * 🧠 Cross-encoder reranking
-* 📈 Retrieval evaluation benchmark suite
+* 📊 Retrieval evaluation benchmarks
 * 🚀 GPU-accelerated FAISS
-* 🔍 Query rewriting & expansion
-* 🧵 Conversational memory layer
-* 🐳 Docker production deployment
-* 🔐 Authentication system
-* 📡 FastAPI backend migration
+* 🔍 Query rewriting and expansion
+* ⚡ Streaming token responses
+* 🧵 Background worker architecture
+* 🐳 Docker deployment
+* 🔐 Authentication and user accounts
+* 📡 FastAPI backend separation
+* 👥 Multi-user session support
 
 ---
 
 # 🎯 Skills Demonstrated
 
-* Hybrid Retrieval Systems (Dense + Sparse + Fusion)
-* FAISS vector database engineering
-* Information Retrieval (IR) design
-* RAG pipeline architecture
-* Embedding caching strategies
-* Production-grade Python modular design
-* Performance profiling & optimization
-* LLM orchestration (Groq / OpenAI)
-* Streamlit deployment engineering
+### Machine Learning & NLP
+
+* Retrieval-Augmented Generation (RAG)
+* Hybrid Retrieval Systems
+* Sentence Transformer Embeddings
+* Vector Search with FAISS
+
+### Information Retrieval
+
+* BM25 Ranking
+* Reciprocal Rank Fusion (RRF)
+* Context Grounding
+* Retrieval System Design
+
+### Software Engineering
+
+* Modular Architecture Design
+* Queue-Based Processing
+* State Management
+* Caching Strategies
+* Error Handling & Retry Logic
+* Performance Optimization
+
+### Deployment
+
+* Streamlit Cloud Deployment
+* Environment Configuration
+* Application Monitoring
 
 ---
 
@@ -318,9 +404,9 @@ MIT License
 
 # ⭐ Support
 
-If you found this useful:
+If you found this project useful:
 
-* ⭐ Star the repo
+* ⭐ Star the repository
 * 🍴 Fork it
-* 🚀 Build on it
+* 🚀 Build upon it
 * 📢 Share feedback
